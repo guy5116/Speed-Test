@@ -36,15 +36,19 @@ sub rng_next {
 sub bench_mandelbrot {
     my ($n) = @_;
     my $total = 0;
+    # every lexical hoisted out of the loops: perl allocates a fresh pad
+    # entry per `my` per iteration scope, ~11% of this benchmark
+    my ($ci, $cr, $zr, $zi, $zr2, $zi2, $i);
     for my $py (0 .. $n - 1) {
-        my $ci = 2.0 * $py / $n - 1.0;
+        $ci = 2.0 * $py / $n - 1.0;
         for my $px (0 .. $n - 1) {
-            my $cr = 2.0 * $px / $n - 1.5;
-            my ($zr, $zi) = (0.0, 0.0);
-            my $i = 0;
+            $cr = 2.0 * $px / $n - 1.5;
+            $zr = 0.0;
+            $zi = 0.0;
+            $i  = 0;
             while ($i < 255) {
-                my $zr2 = $zr * $zr;
-                my $zi2 = $zi * $zi;
+                $zr2 = $zr * $zr;
+                $zi2 = $zi * $zi;
                 last if $zr2 + $zi2 > 4.0;
                 $zi = 2.0 * $zr * $zi + $ci;
                 $zr = $zr2 - $zi2 + $cr;
@@ -65,7 +69,12 @@ sub bench_sieve {
         if (!vec($comp, $i, 8)) {
             $count++;
             for (my $j = $i * $i; $j <= $n; $j += $i) {
-                vec($comp, $j, 8) = 1;
+                # 4-arg substr, not lvalue vec: assigning through vec()
+                # builds a magic SV and dispatches through magic_setvec on
+                # every store -- measured at ~2x the whole benchmark. The
+                # *read* above stays vec(), which measures faster than
+                # substr eq; stores outnumber reads here, reads win above.
+                substr($comp, $j, 1, "\1");
             }
         }
     }
@@ -76,6 +85,7 @@ sub bench_sieve {
 # Hand-written, not sort() -- the point is to measure the language, not the
 # quality of its sort library.
 sub insertion_sort {
+    use integer;
     my ($arr, $lo, $hi) = @_;
     for my $i ($lo + 1 .. $hi) {
         my $v = $arr->[$i];
@@ -89,13 +99,16 @@ sub insertion_sort {
 }
 
 sub quicksort {
+    use integer;
     my ($arr, $lo, $hi) = @_;
+    my $t;
     while ($hi - $lo > 16) {
         my $mid = $lo + (($hi - $lo) >> 1);
-        # median-of-three: order a[lo] <= a[mid] <= a[hi]
-        @$arr[$mid, $lo] = @$arr[$lo, $mid] if $arr->[$mid] < $arr->[$lo];
-        @$arr[$hi,  $lo] = @$arr[$lo, $hi]  if $arr->[$hi]  < $arr->[$lo];
-        @$arr[$hi, $mid] = @$arr[$mid, $hi] if $arr->[$hi]  < $arr->[$mid];
+        # median-of-three: order a[lo] <= a[mid] <= a[hi]. Plain temp swaps:
+        # the slice-swap idiom builds two 2-element lists per swap.
+        if ($arr->[$mid] < $arr->[$lo]) { $t = $arr->[$mid]; $arr->[$mid] = $arr->[$lo]; $arr->[$lo] = $t; }
+        if ($arr->[$hi] < $arr->[$lo])  { $t = $arr->[$hi];  $arr->[$hi]  = $arr->[$lo]; $arr->[$lo] = $t; }
+        if ($arr->[$hi] < $arr->[$mid]) { $t = $arr->[$hi];  $arr->[$hi]  = $arr->[$mid]; $arr->[$mid] = $t; }
         my $pivot = $arr->[$mid];
 
         my ($i, $j) = ($lo, $hi);
@@ -103,7 +116,9 @@ sub quicksort {
             $i++ while $arr->[$i] < $pivot;
             $j-- while $arr->[$j] > $pivot;
             if ($i <= $j) {
-                @$arr[$i, $j] = @$arr[$j, $i];
+                $t = $arr->[$i];
+                $arr->[$i] = $arr->[$j];
+                $arr->[$j] = $t;
                 $i++;
                 $j--;
             }
@@ -118,7 +133,13 @@ sub quicksort {
 sub bench_quicksort {
     my ($n) = @_;
     rng_seed(12345);
-    my @a = map { rng_next() } 1 .. $n;
+    use integer;
+    # the PRNG body is pasted into the map block: perl has no inliner, and a
+    # sub call around two arithmetic ops measured ~25% of the whole fill
+    my @a = map {
+        $rng_state = $rng_state * 6364136223846793005 + 1442695040888963407;
+        ($rng_state >> 33) & 0x7FFFFFFF;
+    } 1 .. $n;
     quicksort(\@a, 0, $n - 1);
     my $h = 0;
     for my $v (@a) {
@@ -145,12 +166,20 @@ sub bench_wordcount {
 
     my %counts;
     my $maxc = 0;
-    for (1 .. $n) {
-        my $ra = rng_next() % VOCAB;
-        my $rb = rng_next() % VOCAB;
-        my $w = $words[int($ra * $rb / VOCAB)];    # triangular, so counts vary
-        my $c = ++$counts{$w};
-        $maxc = $c if $c > $maxc;
+    {
+        # `use integer` makes / truncating division (no int() op, no FP
+        # round-trip), and the PRNG is pasted inline -- see bench_quicksort
+        use integer;
+        my ($ra, $rb, $c);
+        for (1 .. $n) {
+            $rng_state = $rng_state * 6364136223846793005 + 1442695040888963407;
+            $ra = (($rng_state >> 33) & 0x7FFFFFFF) % VOCAB;
+            $rng_state = $rng_state * 6364136223846793005 + 1442695040888963407;
+            $rb = (($rng_state >> 33) & 0x7FFFFFFF) % VOCAB;
+            my $w = $words[$ra * $rb / VOCAB];    # triangular, so counts vary
+            $c = ++$counts{$w};
+            $maxc = $c if $c > $maxc;
+        }
     }
     return (scalar keys %counts) * 1000003 + $maxc;
 }
@@ -184,16 +213,25 @@ sub bench_binarytrees {
 sub bench_matmul {
     my ($n) = @_;
     rng_seed(12345);
+    use integer;    # everything here is integer math; skip the FP round-trips
     my (@a, @b);
-    $a[$_] = rng_next() % 100 for 0 .. $n * $n - 1;
-    $b[$_] = rng_next() % 100 for 0 .. $n * $n - 1;
+    for my $t (0 .. $n * $n - 1) {
+        $rng_state = $rng_state * 6364136223846793005 + 1442695040888963407;
+        $a[$t] = (($rng_state >> 33) & 0x7FFFFFFF) % 100;
+    }
+    for my $t (0 .. $n * $n - 1) {
+        $rng_state = $rng_state * 6364136223846793005 + 1442695040888963407;
+        $b[$t] = (($rng_state >> 33) & 0x7FFFFFFF) % 100;
+    }
     my @c;
     for my $i (0 .. $n - 1) {
         my $ib = $i * $n;
         for my $j (0 .. $n - 1) {
-            my $s = 0;
+            my $s  = 0;
+            my $bi = $j;    # walks b down the column; saves a multiply per step
             for my $k (0 .. $n - 1) {
-                $s += $a[$ib + $k] * $b[$k * $n + $j];
+                $s += $a[$ib + $k] * $b[$bi];
+                $bi += $n;
             }
             $c[$ib + $j] = $s;
         }

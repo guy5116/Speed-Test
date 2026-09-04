@@ -7,7 +7,8 @@
 # Same algorithm, same deterministic input, same checksum as every other
 # bench.* in this suite.
 #
-# Plain PHP 7.3+, CLI defaults, no extensions. Two judgement calls worth
+# Plain PHP 7.3+, no extensions required -- though the runner switches on
+# opcache's tracing JIT when it is present. Two judgement calls worth
 # knowing about: PHP integers are signed 64-bit and *overflow to float*
 # instead of wrapping, so the shared PRNG's 64-bit multiply is done in
 # 32-bit halves whose products stay safely inside 63 bits; and the sieve's
@@ -129,9 +130,26 @@ function quicksort(&$a, $lo, $hi) {
 }
 
 function bench_quicksort($n) {
+    global $rng_lo, $rng_hi;
     rng_seed(12345);
-    $a = [];
-    for ($i = 0; $i < $n; $i++) $a[] = rng_next();
+    # The PRNG body is pasted inline with the state in plain locals: `global`
+    # binds by reference, and every read through a reference zval blunts the
+    # JIT's type inference. Same expansion in wordcount and matmul.
+    $slo = $rng_lo;
+    $shi = $rng_hi;
+    $a = array_fill(0, $n, 0);    # preallocated: no rehash mid-fill
+    for ($i = 0; $i < $n; $i++) {
+        $p   = $slo * 0x4C957F2D;
+        $t   = ($p & 0xFFFFFFFF) + 0xF767814F;
+        $shi = (($p >> 32)
+             + (($slo * 0x5851F42D) & 0xFFFFFFFF)
+             + (($shi * 0x4C957F2D) & 0xFFFFFFFF)
+             + 0x14057B7E + ($t >> 32)) & 0xFFFFFFFF;
+        $slo = $t & 0xFFFFFFFF;
+        $a[$i] = $shi >> 1;
+    }
+    $rng_lo = $slo;
+    $rng_hi = $shi;
     quicksort($a, 0, $n - 1);
     $h = 0;
     foreach ($a as $v) {
@@ -155,16 +173,37 @@ function bench_wordcount($n) {
         $words[] = $w;
     }
 
+    global $rng_lo, $rng_hi;
+    $slo = $rng_lo;    # PRNG inlined; see bench_quicksort
+    $shi = $rng_hi;
     $counts = [];
     $maxc = 0;
     for ($k = 0; $k < $n; $k++) {
-        $ra = rng_next() % VOCAB;
-        $rb = rng_next() % VOCAB;
-        $w = $words[intdiv($ra * $rb, VOCAB)];    # triangular, so counts vary
+        $p   = $slo * 0x4C957F2D;
+        $t   = ($p & 0xFFFFFFFF) + 0xF767814F;
+        $shi = (($p >> 32)
+             + (($slo * 0x5851F42D) & 0xFFFFFFFF)
+             + (($shi * 0x4C957F2D) & 0xFFFFFFFF)
+             + 0x14057B7E + ($t >> 32)) & 0xFFFFFFFF;
+        $slo = $t & 0xFFFFFFFF;
+        $ra = ($shi >> 1) % VOCAB;
+        $p   = $slo * 0x4C957F2D;
+        $t   = ($p & 0xFFFFFFFF) + 0xF767814F;
+        $shi = (($p >> 32)
+             + (($slo * 0x5851F42D) & 0xFFFFFFFF)
+             + (($shi * 0x4C957F2D) & 0xFFFFFFFF)
+             + 0x14057B7E + ($t >> 32)) & 0xFFFFFFFF;
+        $slo = $t & 0xFFFFFFFF;
+        $rb = ($shi >> 1) % VOCAB;
+        # (int) of the float division equals intdiv here -- $ra*$rb < 2.5e7,
+        # doubles are exact that low -- and it skips a real function call
+        $w = $words[(int)($ra * $rb / VOCAB)];    # triangular, so counts vary
         $c = ($counts[$w] ?? 0) + 1;
         $counts[$w] = $c;
         if ($c > $maxc) $maxc = $c;
     }
+    $rng_lo = $slo;
+    $rng_hi = $shi;
     return count($counts) * 1000003 + $maxc;
 }
 
@@ -199,19 +238,44 @@ function bench_binarytrees($n) {
 
 # ---------- 6. matmul: triple-nested loops over flat 2D arrays ----------
 function bench_matmul($n) {
+    global $rng_lo, $rng_hi;
     rng_seed(12345);
     $nn = $n * $n;
-    $a = [];
-    $b = [];
-    for ($i = 0; $i < $nn; $i++) $a[] = rng_next() % 100;
-    for ($i = 0; $i < $nn; $i++) $b[] = rng_next() % 100;
-    $c = [];
+    $slo = $rng_lo;    # PRNG inlined; see bench_quicksort
+    $shi = $rng_hi;
+    $a = array_fill(0, $nn, 0);
+    $b = array_fill(0, $nn, 0);
+    for ($i = 0; $i < $nn; $i++) {
+        $p   = $slo * 0x4C957F2D;
+        $t   = ($p & 0xFFFFFFFF) + 0xF767814F;
+        $shi = (($p >> 32)
+             + (($slo * 0x5851F42D) & 0xFFFFFFFF)
+             + (($shi * 0x4C957F2D) & 0xFFFFFFFF)
+             + 0x14057B7E + ($t >> 32)) & 0xFFFFFFFF;
+        $slo = $t & 0xFFFFFFFF;
+        $a[$i] = ($shi >> 1) % 100;
+    }
+    for ($i = 0; $i < $nn; $i++) {
+        $p   = $slo * 0x4C957F2D;
+        $t   = ($p & 0xFFFFFFFF) + 0xF767814F;
+        $shi = (($p >> 32)
+             + (($slo * 0x5851F42D) & 0xFFFFFFFF)
+             + (($shi * 0x4C957F2D) & 0xFFFFFFFF)
+             + 0x14057B7E + ($t >> 32)) & 0xFFFFFFFF;
+        $slo = $t & 0xFFFFFFFF;
+        $b[$i] = ($shi >> 1) % 100;
+    }
+    $rng_lo = $slo;
+    $rng_hi = $shi;
+    $c = array_fill(0, $nn, 0);
     for ($i = 0; $i < $n; $i++) {
         $ib = $i * $n;
         for ($j = 0; $j < $n; $j++) {
             $s = 0;
+            $bi = $j;    # walks b down the column; saves a multiply per step
             for ($k = 0; $k < $n; $k++) {
-                $s += $a[$ib + $k] * $b[$k * $n + $j];
+                $s += $a[$ib + $k] * $b[$bi];
+                $bi += $n;
             }
             $c[$ib + $j] = $s;
         }

@@ -125,9 +125,10 @@ func quicksort(_ a: inout [UInt32], _ lo: Int, _ hi: Int) {
 
 func benchQuicksort(_ n: Int) -> Int64 {
     rngSeed(12345)
-    var a = [UInt32]()
-    a.reserveCapacity(n)
-    for _ in 0..<n { a.append(rngNext()) }
+    // filled by index: append() pays a uniqueness + capacity check per
+    // element even after reserveCapacity, and this loop is inside the timing
+    var a = [UInt32](repeating: 0, count: n)
+    for i in 0..<n { a[i] = rngNext() }
     quicksort(&a, 0, n - 1)
     var h: UInt32 = 0
     for i in 0..<n { h = h &* 31 &+ a[i] }  // order-sensitive checksum
@@ -145,11 +146,14 @@ func benchWordcount(_ n: Int) -> Int64 {
     words.reserveCapacity(VOCAB)
     for _ in 0..<VOCAB {
         let len = 3 + Int(rngNext() % 6)
-        var s = ""
+        // build as UTF-8 bytes: appending Characters one at a time drags in
+        // grapheme breaking, which is pure overhead for plain ASCII
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(len)
         for _ in 0..<len {
-            s.append(Character(UnicodeScalar(97 + rngNext() % 26)!))
+            bytes.append(UInt8(97 + rngNext() % 26))
         }
-        words.append(s)
+        words.append(String(decoding: bytes, as: UTF8.self))
     }
 
     var counts = [String: Int](minimumCapacity: 8192)
@@ -158,9 +162,16 @@ func benchWordcount(_ n: Int) -> Int64 {
         let ra = Int(rngNext()) % VOCAB
         let rb = Int(rngNext()) % VOCAB
         let w = words[(ra * rb) / VOCAB]  // triangular, so counts vary
-        let c = (counts[w] ?? 0) + 1
-        counts[w] = c
-        if c > maxc { maxc = c }
+        // one hash + probe via the index, not the two a read-then-write
+        // subscript pair costs; values[i] updates in place, no rehash
+        if let i = counts.index(forKey: w) {
+            let c = counts.values[i] + 1
+            counts.values[i] = c
+            if c > maxc { maxc = c }
+        } else {
+            counts[w] = 1
+            if maxc < 1 { maxc = 1 }
+        }
     }
     return Int64(counts.count) * 1000003 + Int64(maxc)
 }
@@ -184,8 +195,10 @@ func makeTree(_ d: Int) -> Node {
 }
 
 func checkTree(_ t: Node) -> Int {
-    guard let l = t.l, let r = t.r else { return 1 }
-    return 1 + checkTree(l) + checkTree(r)
+    // test only l, like every other language: binding r too would retain/
+    // release a second child per node, ARC traffic no one else pays
+    guard let l = t.l else { return 1 }
+    return 1 + checkTree(l) + checkTree(t.r!)
 }
 
 func benchBinarytrees(_ n: Int) -> Int64 {

@@ -58,7 +58,12 @@ class Bench {
         for (int i = 2; i <= n; i++) {
             if (comp[i] == 0) {
                 count++;
-                for (long j = (long)i * i; j <= n; j += i) comp[j] = 1;
+                // start point computed in 64-bit (i*i overflows int near the
+                // top), but the loop itself runs on int so the JIT can keep
+                // its range checks out of the marking loop
+                long start = (long)i * i;
+                if (start <= n)
+                    for (int j = (int)start; j <= n; j += i) comp[j] = 1;
             }
         }
         return count;
@@ -102,10 +107,10 @@ class Bench {
     static long BenchQuicksort(int n) {
         uint[] a = new uint[n];
         RngSeed(12345);
-        for (int i = 0; i < n; i++) a[i] = RngNext();
+        for (int i = 0; i < a.Length; i++) a[i] = RngNext();
         Quicksort(a, 0, n - 1);
         uint h = 0;
-        for (int i = 0; i < n; i++) h = h * 31u + a[i];   // order-sensitive checksum
+        for (int i = 0; i < a.Length; i++) h = h * 31u + a[i];   // order-sensitive checksum
         return (long)h;
     }
 
@@ -125,15 +130,16 @@ class Bench {
             words[i] = new string(buf);
         }
 
-        var counts = new Dictionary<string, int>();
+        var counts = new Dictionary<string, int>(8192);
         long maxc = 0;
         for (int k = 0; k < n; k++) {
             int ra = (int)(RngNext() % VOCAB);
             int rb = (int)(RngNext() % VOCAB);
-            string w = words[(int)((long)ra * rb / VOCAB)];  // triangular, so counts vary
-            counts.TryGetValue(w, out int c);
-            c++;
-            counts[w] = c;
+            string w = words[ra * rb / VOCAB];  // triangular, so counts vary; fits int
+            // one hash, one probe: the ref points straight at the bucket slot
+            ref int slot = ref System.Runtime.InteropServices.CollectionsMarshal
+                                 .GetValueRefOrAddDefault(counts, w, out _);
+            int c = ++slot;
             if (c > maxc) maxc = c;
         }
         return (long)counts.Count * 1000003L + maxc;
@@ -173,18 +179,22 @@ class Bench {
         uint[] b = new uint[n * n];
         uint[] c = new uint[n * n];
         RngSeed(12345);
-        for (int i = 0; i < n * n; i++) a[i] = RngNext() % 100;
-        for (int i = 0; i < n * n; i++) b[i] = RngNext() % 100;
+        for (int i = 0; i < a.Length; i++) a[i] = RngNext() % 100;
+        for (int i = 0; i < b.Length; i++) b[i] = RngNext() % 100;
         for (int i = 0; i < n; i++) {
             int ib = i * n;
+            // a row span bounded by its own Length is the shape RyuJIT
+            // recognises for range-check elimination; bk += n replaces k*n
+            ReadOnlySpan<uint> arow = new ReadOnlySpan<uint>(a, ib, n);
             for (int j = 0; j < n; j++) {
                 uint s = 0;
-                for (int k = 0; k < n; k++) s += a[ib + k] * b[k * n + j];
+                int bk = j;
+                for (int k = 0; k < arow.Length; k++) { s += arow[k] * b[bk]; bk += n; }
                 c[ib + j] = s;
             }
         }
         uint h = 0;
-        for (int i = 0; i < n * n; i++) h = h * 31u + c[i];
+        for (int i = 0; i < c.Length; i++) h = h * 31u + c[i];
         return (long)h;
     }
 
@@ -212,6 +222,11 @@ class Bench {
         int size = int.Parse(args[1]);
         int reps = (args.Length > 2) ? int.Parse(args[2]) : 1;
         if (reps < 1) reps = 1;
+        int warmup = (args.Length > 3) ? int.Parse(args[3]) : 0;
+
+        // Untimed warm-up (run.py --warmup): lets tiered compilation reach
+        // full optimization before the clock starts. Results discarded.
+        for (int w = 0; w < warmup; w++) Run(name, size);
 
         // Best-of-N: the fastest run is the one least polluted by scheduler noise,
         // cold caches and (for the JIT languages) not-yet-compiled code.

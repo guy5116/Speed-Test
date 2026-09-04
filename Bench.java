@@ -50,7 +50,12 @@ public class Bench {
         for (int i = 2; i <= n; i++) {
             if (comp[i] == 0) {
                 count++;
-                for (long j = (long) i * i; j <= n; j += i) comp[(int) j] = 1;
+                // i*i is computed in 64-bit (it overflows int near the top),
+                // but the marking loop runs on int so C2 keeps its range
+                // checks out of the loop body
+                long start = (long) i * i;
+                if (start <= n)
+                    for (int j = (int) start; j <= n; j += i) comp[j] = 1;
             }
         }
         return count;
@@ -61,29 +66,29 @@ public class Bench {
         for (int i = lo + 1; i <= hi; i++) {
             int v = a[i];
             int j = i - 1;
-            while (j >= lo && cmp(a[j], v) > 0) { a[j + 1] = a[j]; j--; }
+            while (j >= lo && a[j] > v) { a[j + 1] = a[j]; j--; }
             a[j + 1] = v;
         }
     }
 
-    /* Java has no unsigned int, so compare the 32-bit values as unsigned
-       to match C/Go/Python. The array holds the same raw bits either way. */
-    static int cmp(int x, int y) { return Integer.compareUnsigned(x, y); }
+    /* Java has no unsigned int, but it doesn't need one here: rngNext()
+       returns the state's top 31 bits, so every value is non-negative and
+       signed compare orders them exactly like C's unsigned compare. */
 
     static void quicksort(int[] a, int lo, int hi) {
         while (hi - lo > 16) {
             int mid = lo + (hi - lo) / 2;
             int t;
             // median-of-three: order a[lo] <= a[mid] <= a[hi]
-            if (cmp(a[mid], a[lo]) < 0)  { t = a[mid]; a[mid] = a[lo];  a[lo]  = t; }
-            if (cmp(a[hi],  a[lo]) < 0)  { t = a[hi];  a[hi]  = a[lo];  a[lo]  = t; }
-            if (cmp(a[hi],  a[mid]) < 0) { t = a[hi];  a[hi]  = a[mid]; a[mid] = t; }
+            if (a[mid] < a[lo])  { t = a[mid]; a[mid] = a[lo];  a[lo]  = t; }
+            if (a[hi]  < a[lo])  { t = a[hi];  a[hi]  = a[lo];  a[lo]  = t; }
+            if (a[hi]  < a[mid]) { t = a[hi];  a[hi]  = a[mid]; a[mid] = t; }
             int pivot = a[mid];
 
             int i = lo, j = hi;
             while (i <= j) {
-                while (cmp(a[i], pivot) < 0) i++;
-                while (cmp(a[j], pivot) > 0) j--;
+                while (a[i] < pivot) i++;
+                while (a[j] > pivot) j--;
                 if (i <= j) { t = a[i]; a[i] = a[j]; a[j] = t; i++; j--; }
             }
             // recurse into the smaller half, loop on the larger: depth stays O(log n)
@@ -116,13 +121,18 @@ public class Bench {
             words[i] = new String(buf);
         }
 
-        HashMap<String, Integer> counts = new HashMap<>();
+        // int[] slots instead of Integer values: merge() would autobox a
+        // fresh Integer on nearly every increment (the cache stops at 127);
+        // a mutable slot is one lookup and zero allocation on the hot path
+        HashMap<String, int[]> counts = new HashMap<>(8192);
         long maxc = 0;
         for (int k = 0; k < n; k++) {
             int ra = rngNext() % VOCAB;
             int rb = rngNext() % VOCAB;
-            String w = words[(int) ((long) ra * rb / VOCAB)];  // triangular, so counts vary
-            int c = counts.merge(w, 1, Integer::sum);
+            String w = words[ra * rb / VOCAB];  // triangular, so counts vary; fits int
+            int[] slot = counts.get(w);
+            if (slot == null) counts.put(w, slot = new int[1]);
+            int c = ++slot[0];
             if (c > maxc) maxc = c;
         }
         return (long) counts.size() * 1000003L + maxc;
@@ -186,6 +196,12 @@ public class Bench {
         int size = Integer.parseInt(args[1]);
         int reps = (args.length > 2) ? Integer.parseInt(args[2]) : 1;
         if (reps < 1) reps = 1;
+        int warmup = (args.length > 3) ? Integer.parseInt(args[3]) : 0;
+
+        // Untimed warm-up (run.py --warmup): lets C2 reach steady state
+        // before the clock starts, the JMH treatment. Deterministic work,
+        // so the results are simply discarded.
+        for (int w = 0; w < warmup; w++) run(name, size);
 
         // Best-of-N: the fastest run is the one least polluted by scheduler noise,
         // cold caches and (for the JIT languages) not-yet-compiled code.

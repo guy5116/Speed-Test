@@ -81,14 +81,19 @@ fn bench_sieve(n: i32) -> i64 {
 // Hand-written, not slice::sort_unstable -- the point is to measure the
 // language, not the quality of its sort library.
 fn insertion_sort(a: &mut [u32], lo: isize, hi: isize) {
-    for i in lo + 1..=hi {
-        let v = a[i as usize];
-        let mut j = i - 1;
-        while j >= lo && a[j as usize] > v {
-            a[(j + 1) as usize] = a[j as usize];
+    // Work on the subslice so the bound the optimiser sees is s.len(), not
+    // "whatever lo and hi happen to be" -- that folds the per-shift range
+    // checks. hi can legitimately be lo-1 (an empty partition), which is why
+    // the end is hi+1 rather than an inclusive ..=hi.
+    let s = &mut a[lo as usize..(hi + 1) as usize];
+    for i in 1..s.len() {
+        let v = s[i];
+        let mut j = i;
+        while j > 0 && s[j - 1] > v {
+            s[j] = s[j - 1];
             j -= 1;
         }
-        a[(j + 1) as usize] = v;
+        s[j] = v;
     }
 }
 
@@ -166,7 +171,7 @@ fn bench_wordcount(n: i32) -> i64 {
         words.push(w);
     }
 
-    let mut counts: HashMap<&str, i64> = HashMap::new();
+    let mut counts: HashMap<&str, i64> = HashMap::with_capacity(8192);
     let mut maxc: i64 = 0;
     for _ in 0..n {
         let ra = rng.next() % VOCAB as u32;
@@ -229,17 +234,22 @@ fn bench_matmul(n: i32) -> i64 {
     let mut c = vec![0u32; n * n];
     for i in 0..n {
         let ib = i * n;
+        // zip the row of a against b in n-sized rows: chunks_exact tells the
+        // optimiser every brow has length n, so with j < n all three bounds
+        // checks fold away. Same k order, same wrapping sums, same checksum.
+        let arow = &a[ib..ib + n];
+        let crow = &mut c[ib..ib + n];
         for j in 0..n {
             let mut s: u32 = 0;
-            for k in 0..n {
-                s = s.wrapping_add(a[ib + k].wrapping_mul(b[k * n + j]));
+            for (av, brow) in arow.iter().zip(b.chunks_exact(n)) {
+                s = s.wrapping_add(av.wrapping_mul(brow[j]));
             }
-            c[ib + j] = s;
+            crow[j] = s;
         }
     }
     let mut h: u32 = 0;
-    for i in 0..n * n {
-        h = h.wrapping_mul(31).wrapping_add(c[i]);
+    for &v in &c {
+        h = h.wrapping_mul(31).wrapping_add(v);
     }
     h as i64
 }

@@ -127,8 +127,8 @@ func benchQuicksort(n int) int64 {
 	}
 	quicksort(a, 0, n-1)
 	var h uint32
-	for i := 0; i < n; i++ {
-		h = h*31 + a[i] // order-sensitive checksum
+	for _, v := range a {
+		h = h*31 + v // order-sensitive checksum
 	}
 	return int64(h)
 }
@@ -149,15 +149,23 @@ func benchWordcount(n int) int64 {
 		words[i] = string(buf)
 	}
 
-	counts := make(map[string]int)
+	// *int slots: counts[w]++ plus the max check would be two or three map
+	// lookups per word; holding the pointer makes it one, and the 5,000
+	// little allocations happen once per distinct word, not per lookup
+	counts := make(map[string]*int, 8192)
 	var maxc int64
 	for k := 0; k < n; k++ {
 		ra := rngNext() % vocabSize
 		rb := rngNext() % vocabSize
 		w := words[(ra*rb)/vocabSize] // triangular, so counts vary
-		counts[w]++
-		if int64(counts[w]) > maxc {
-			maxc = int64(counts[w])
+		p := counts[w]
+		if p == nil {
+			p = new(int)
+			counts[w] = p
+		}
+		*p++
+		if int64(*p) > maxc {
+			maxc = int64(*p)
 		}
 	}
 	return int64(len(counts))*1000003 + maxc
@@ -205,17 +213,22 @@ func benchMatmul(n int) int64 {
 	}
 	for i := 0; i < n; i++ {
 		ib := i * n
+		// ranging over the row slice drops a's bounds check, and the
+		// additive bk replaces the k*n multiply the compiler was emitting
+		arow := a[ib : ib+n]
 		for j := 0; j < n; j++ {
 			var s uint32
-			for k := 0; k < n; k++ {
-				s += a[ib+k] * b[k*n+j]
+			bk := j
+			for _, av := range arow {
+				s += av * b[bk]
+				bk += n
 			}
 			c[ib+j] = s
 		}
 	}
 	var h uint32
-	for i := 0; i < n*n; i++ {
-		h = h*31 + c[i]
+	for _, v := range c {
+		h = h*31 + v
 	}
 	return int64(h)
 }

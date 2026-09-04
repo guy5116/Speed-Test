@@ -235,6 +235,7 @@ class Language:
         self.cmd = None
         self.reason = ""
         self.sits_out = {}      # benchmark key -> why this language skips it
+        self.warmup = False     # honours the optional warm-up argument (JITs)
 
 
 def detect_version(argv, transform=None):
@@ -328,14 +329,14 @@ def build_all(skip):
         exe = os.path.join(BUILD, "bench_c")
         src = os.path.join(HERE, "bench.c")
         if fresh(exe, src):
-            lang.note = saved_notes.get("c", "compiled -O2")
+            lang.note = saved_notes.get("c", "compiled -O3")
         else:
-            flags = ["-O2", "-march=native"]
+            flags = ["-O3", "-march=native"]
             proc = subprocess.run([cc] + flags + ["-o", exe, src],
                                   capture_output=True, text=True)
             if proc.returncode != 0:
                 # -march=native isn't universal (Apple silicon clang, some cross setups)
-                flags = ["-O2"]
+                flags = ["-O3"]
                 proc = subprocess.run([cc] + flags + ["-o", exe, src],
                                       capture_output=True, text=True)
             if proc.returncode != 0:
@@ -356,13 +357,13 @@ def build_all(skip):
         exe = os.path.join(BUILD, "bench_cpp")
         src = os.path.join(HERE, "bench.cpp")
         if fresh(exe, src):
-            lang.note = saved_notes.get("cpp", "compiled -O2 -std=c++17")
+            lang.note = saved_notes.get("cpp", "compiled -O3 -std=c++17")
         else:
-            flags = ["-O2", "-march=native", "-std=c++17"]
+            flags = ["-O3", "-march=native", "-std=c++17"]
             proc = subprocess.run([cxx] + flags + ["-o", exe, src],
                                   capture_output=True, text=True)
             if proc.returncode != 0:
-                flags = ["-O2", "-std=c++17"]
+                flags = ["-O3", "-std=c++17"]
                 proc = subprocess.run([cxx] + flags + ["-o", exe, src],
                                       capture_output=True, text=True)
             if proc.returncode != 0:
@@ -384,10 +385,15 @@ def build_all(skip):
         src = os.path.join(HERE, "bench.rs")
         if not fresh(exe, src):
             # A bare rustc, no Cargo: bench.rs deliberately depends on nothing.
-            proc = subprocess.run([rustc, "-O", "--edition", "2021", "-o", exe, src],
+            # opt-level=3 + target-cpu=native + one codegen unit is what a
+            # tuned cargo release profile would hand it.
+            best = ["-C", "opt-level=3", "-C", "target-cpu=native",
+                    "-C", "codegen-units=1"]
+            proc = subprocess.run([rustc] + best + ["--edition", "2021", "-o", exe, src],
                                   capture_output=True, text=True)
             if proc.returncode != 0:
-                # --edition predates rustc 1.27; the source is valid in 2015 too
+                # target-cpu=native can fail on odd cross setups; -O still works,
+                # and --edition predates rustc 1.27 (the source is valid in 2015 too)
                 proc = subprocess.run([rustc, "-O", "-o", exe, src],
                                       capture_output=True, text=True)
             if proc.returncode != 0:
@@ -397,7 +403,7 @@ def build_all(skip):
         lang.cmd = [exe]
         lang.version = detect_version([rustc, "--version"],
                                       lambda t: " ".join(t.split()[:2]))
-        lang.note = "compiled -O, no crates, no unsafe"
+        lang.note = "compiled -Copt-level=3 -Ctarget-cpu=native, no crates, no unsafe"
         return lang
 
     def build_swift():
@@ -408,9 +414,19 @@ def build_all(skip):
             return lang
         exe = os.path.join(BUILD, "bench_swift")
         src = os.path.join(HERE, "bench.swift")
-        if not fresh(exe, src):
-            proc = subprocess.run([swiftc, "-O", "-o", exe, src],
+        note = "compiled -Ounchecked, no Foundation"
+        if fresh(exe, src):
+            note = saved_notes.get("swift", note)
+        else:
+            # -Ounchecked drops the bounds/overflow preconditions -O keeps;
+            # the source already asks for wrapping arithmetic (&*, &+), so
+            # the semantics it removes are ones this program never trips.
+            proc = subprocess.run([swiftc, "-Ounchecked", "-o", exe, src],
                                   capture_output=True, text=True)
+            if proc.returncode != 0:
+                note = "compiled -O, no Foundation"
+                proc = subprocess.run([swiftc, "-O", "-o", exe, src],
+                                      capture_output=True, text=True)
             if proc.returncode != 0:
                 lang.reason = "compile failed: " + proc.stderr.strip().splitlines()[-1][:60]
                 return lang
@@ -418,7 +434,7 @@ def build_all(skip):
         lang.cmd = [exe]
         lang.version = detect_version([swiftc, "--version"],
                                       lambda t: " ".join(t.split()[:3]))
-        lang.note = "compiled -O, no Foundation"
+        lang.note = note
         return lang
 
     def build_go():
@@ -429,19 +445,34 @@ def build_all(skip):
             return lang
         exe = os.path.join(BUILD, "bench_go")
         src = os.path.join(HERE, "bench.go")
-        if not fresh(exe, src):
+        note = "compiled, GC runtime"
+        if fresh(exe, src):
+            note = saved_notes.get("go", note)
+        else:
             env = dict(os.environ)
             env.setdefault("GOCACHE", os.path.join(BUILD, ".gocache"))
             env.setdefault("GOFLAGS", "-mod=mod")
-            proc = subprocess.run([go, "build", "-o", exe, src],
-                                  capture_output=True, text=True, cwd=HERE, env=env)
+            attempts = [(dict(env), note)]
+            if platform.machine() in ("x86_64", "amd64"):
+                # GOAMD64=v3 lets the compiler assume AVX2-era hardware, the
+                # closest Go gets to -march=native; fall back if this CPU isn't
+                v3 = dict(env)
+                v3["GOAMD64"] = "v3"
+                attempts.insert(0, (v3, "compiled GOAMD64=v3, GC runtime"))
+            for attempt_env, attempt_note in attempts:
+                proc = subprocess.run([go, "build", "-o", exe, src],
+                                      capture_output=True, text=True, cwd=HERE,
+                                      env=attempt_env)
+                if proc.returncode == 0:
+                    note = attempt_note
+                    break
             if proc.returncode != 0:
                 lang.reason = "build failed: " + proc.stderr.strip().splitlines()[-1][:60]
                 return lang
         lang.available = True
         lang.cmd = [exe]
         lang.version = detect_version([go, "version"])
-        lang.note = "compiled, GC runtime"
+        lang.note = note
         return lang
 
     def build_java():
@@ -461,6 +492,7 @@ def build_all(skip):
         lang.cmd = [java, "-cp", BUILD, "Bench"]
         lang.version = detect_version([java, "-version"])
         lang.note = "bytecode + JIT"
+        lang.warmup = True
         return lang
 
     def build_csharp():
@@ -488,6 +520,8 @@ def build_all(skip):
             '    <ImplicitUsings>disable</ImplicitUsings>\n'
             '    <InvariantGlobalization>true</InvariantGlobalization>\n'
             '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>\n'
+            '    <ServerGarbageCollection>true</ServerGarbageCollection>\n'
+            '    <ConcurrentGarbageCollection>false</ConcurrentGarbageCollection>\n'
             '  </PropertyGroup>\n'
             '  <ItemGroup>\n'
             '    <Compile Include="%s" />\n'
@@ -521,7 +555,8 @@ def build_all(skip):
         lang.available = True
         lang.cmd = [dotnet, dll]
         lang.version = "dotnet " + (ver or "?")
-        lang.note = "bytecode + JIT (.NET)"
+        lang.note = "bytecode + JIT (.NET, server GC)"
+        lang.warmup = True
         return lang
 
     def build_js():
@@ -534,6 +569,7 @@ def build_all(skip):
         lang.cmd = [node, os.path.join(HERE, "bench.js")]
         lang.version = detect_version([node, "--version"], lambda t: "node " + t)
         lang.note = "JIT (V8), no flags"
+        lang.warmup = True
         return lang
 
     def build_lua():
@@ -577,11 +613,25 @@ def build_all(skip):
         if not php:
             lang.reason = "php not found"
             return lang
+        # PHP 8 ships a JIT inside opcache, off by default on the CLI. Probe
+        # that it actually engages before claiming it; some builds lack the
+        # extension entirely.
+        jit = ["-d", "opcache.enable_cli=1", "-d", "opcache.jit=tracing",
+               "-d", "opcache.jit_buffer_size=64M"]
+        probe = subprocess.run(
+            [php] + jit + ["-r",
+             'exit((int)!(function_exists("opcache_get_status")'
+             ' && (opcache_get_status()["jit"]["enabled"] ?? false)));'],
+            capture_output=True, text=True)
         lang.available = True
-        lang.cmd = [php, os.path.join(HERE, "bench.php")]
+        if probe.returncode == 0:
+            lang.cmd = [php] + jit + [os.path.join(HERE, "bench.php")]
+            lang.note = "opcache JIT (tracing)"
+        else:
+            lang.cmd = [php, os.path.join(HERE, "bench.php")]
+            lang.note = "interpreted, no opcache JIT available"
         lang.version = detect_version([php, "--version"],
                                       lambda t: " ".join(t.split()[:2]))
-        lang.note = "interpreted, default CLI config"
         return lang
 
     def build_python():
@@ -596,17 +646,64 @@ def build_all(skip):
         lang.note = "interpreted, no numpy"
         return lang
 
+    def build_numpy():
+        lang = Language("numpy", "NumPy", "36", (77, 171, 207))
+        candidates = []
+        for name in ("python3", "python", "python3.14", "python3.13", "python3.12"):
+            p = shutil.which(name)
+            if p and p not in candidates:
+                candidates.append(p)
+        py = None
+        for cand in candidates:
+            if subprocess.run([cand, "-c", "import numpy"],
+                              capture_output=True).returncode == 0:
+                py = cand
+                break
+        if not py:
+            lang.reason = "no python with numpy found (pip install numpy)"
+            return lang
+        lang.available = True
+        lang.cmd = [py, os.path.join(HERE, "bench_numpy.py")]
+        lang.version = detect_version(
+            [py, "-c", "import numpy, platform; "
+             "print('python %s + numpy %s' % (platform.python_version(), numpy.__version__))"])
+        lang.note = "same interpreter, loops pushed into C/BLAS"
+        lang.sits_out["quicksort"] = (
+            "sits this one out: the rule is the same hand-written sort, and "
+            "np.sort is a different program (C introsort)")
+        lang.sits_out["wordcount"] = (
+            "sits this one out: no hash maps in NumPy; the vectorised form "
+            "would skip the strings entirely")
+        lang.sits_out["binarytrees"] = (
+            "sits this one out: the workload is allocating little heap "
+            "objects, the exact thing NumPy exists to avoid")
+        return lang
+
     def build_ruby():
         lang = Language("ruby", "Ruby", "31", (225, 50, 90))
         ruby = shutil.which("ruby")
         if not ruby:
             lang.reason = "ruby not found"
             return lang
+        # CRuby 3.2+ ships YJIT but leaves it off; enable it when this build
+        # has it compiled in (not all distro rubies do). The call threshold
+        # matters: YJIT compiles at method entry after N calls and has no
+        # on-stack replacement, so the default of 30 would leave a top-level
+        # bench_* body -- called `reps` times -- interpreted forever.
+        yjit = ["--yjit", "--yjit-call-threshold=1"]
+        probe = subprocess.run(
+            [ruby] + yjit + ["-e",
+             "exit(defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled? ? 0 : 1)"],
+            capture_output=True, text=True)
         lang.available = True
-        lang.cmd = [ruby, os.path.join(HERE, "bench.rb")]
+        if probe.returncode == 0:
+            lang.cmd = [ruby] + yjit + [os.path.join(HERE, "bench.rb")]
+            lang.note = "CRuby + YJIT"
+        else:
+            lang.cmd = [ruby, os.path.join(HERE, "bench.rb")]
+            lang.note = "interpreted, no YJIT in this build"
         lang.version = detect_version([ruby, "--version"],
                                       lambda t: " ".join(t.split()[:2]))
-        lang.note = "interpreted, default CRuby"
         return lang
 
     def build_cobol():
@@ -620,9 +717,14 @@ def build_all(skip):
         if not fresh(exe, src):
             # -fno-trunc: C-style binary wraparound instead of decimal truncation
             # -fstatic-call: CALL "malloc"/"free"/"clock_gettime" link straight to libc
-            proc = subprocess.run([cobc, "-x", "-O2", "-fno-trunc", "-fstatic-call",
+            proc = subprocess.run([cobc, "-x", "-O3", "-fno-trunc", "-fstatic-call",
                                    "-o", exe, src],
                                   capture_output=True, text=True)
+            if proc.returncode != 0:
+                # -O3 arrived with GnuCOBOL 3; older cobc still knows -O2
+                proc = subprocess.run([cobc, "-x", "-O2", "-fno-trunc", "-fstatic-call",
+                                       "-o", exe, src],
+                                      capture_output=True, text=True)
             if proc.returncode != 0:
                 msg = (proc.stderr or "").strip().splitlines()
                 lang.reason = "compile failed: " + (msg[-1][:60] if msg else "no output")
@@ -640,7 +742,8 @@ def build_all(skip):
 
     builders = [build_asm, build_c, build_cpp, build_rust, build_swift,
                 build_go, build_java, build_csharp, build_js, build_lua,
-                build_perl, build_php, build_python, build_ruby, build_cobol]
+                build_perl, build_php, build_python, build_numpy, build_ruby,
+                build_cobol]
     with ThreadPoolExecutor(max_workers=len(builders)) as pool:
         langs = list(pool.map(lambda fn: fn(), builders))
 
@@ -776,20 +879,21 @@ REF_RATIO = {
                "binarytrees": 23.0, "matmul": 31.0},
     "perl":   {"mandelbrot": 57.0, "sieve": 34.0, "quicksort": 44.0, "wordcount": 19.0,
                "binarytrees": 38.0, "matmul": 110.0},
-    "php":    {"mandelbrot": 28.0, "sieve": 12.0, "quicksort": 22.0, "wordcount": 12.0,
-               "binarytrees": 12.0, "matmul": 65.0},
+    "php":    {"mandelbrot": 9.0,  "sieve": 6.0,  "quicksort": 8.0,  "wordcount": 8.0,
+               "binarytrees": 8.0,  "matmul": 20.0},
     "python": {"mandelbrot": 50.5, "sieve": 16.5, "quicksort": 29.3, "wordcount": 28.1,
                "binarytrees": 9.5,  "matmul": 125.0},
-    "ruby":   {"mandelbrot": 32.0, "sieve": 10.0, "quicksort": 40.0, "wordcount": 35.0,
-               "binarytrees": 13.0, "matmul": 115.0},
+    "numpy":  {"mandelbrot": 4.0,  "sieve": 1.5,  "matmul": 0.7},
+    "ruby":   {"mandelbrot": 16.0, "sieve": 7.0,  "quicksort": 20.0, "wordcount": 25.0,
+               "binarytrees": 9.0,  "matmul": 55.0},
     "cobol":  {"mandelbrot": 4000.0, "sieve": 35.0, "quicksort": 30.0, "wordcount": 150.0,
                "binarytrees": 2.0,  "matmul": 230.0},
 }
 
 REF_STARTUP = {"asm": 0.0006, "c": 0.0007, "cpp": 0.001, "rust": 0.0008, "swift": 0.002,
                "go": 0.001, "java": 0.064, "csharp": 0.08, "js": 0.023, "lua": 0.001,
-               "perl": 0.006, "php": 0.025, "python": 0.013, "ruby": 0.06,
-               "cobol": 0.003}
+               "perl": 0.006, "php": 0.025, "python": 0.013, "numpy": 0.11,
+               "ruby": 0.06, "cobol": 0.003}
 REF_BUILD = 12.0
 
 
@@ -938,10 +1042,18 @@ class Estimator:
 
 # ---------------------------------------------------------------- running
 
-def run_one(lang, bench_key, size, reps):
+# Set in main() when --pin is given: a taskset prefix that nails every
+# benchmark process to one core, the way the Benchmarks Game runs do. One
+# core means no cross-CPU migrations mid-run and steadier cache behaviour.
+PIN = []
+
+
+def run_one(lang, bench_key, size, reps, warmup=0):
     """Returns (compute_seconds, checksum, wall_seconds, error). The error is
     returned rather than printed, so the caller can stop the spinner first."""
-    argv = lang.cmd + [bench_key, str(size), str(reps)]
+    argv = PIN + lang.cmd + [bench_key, str(size), str(reps)]
+    if warmup and lang.warmup:
+        argv.append(str(warmup))
     t0 = time.perf_counter()
     try:
         proc = subprocess.run(argv, capture_output=True, text=True)
@@ -969,7 +1081,7 @@ def measure_startup(lang, trials=5):
     best = None
     for _ in range(trials):
         t0 = time.perf_counter()
-        proc = subprocess.run(lang.cmd + ["mandelbrot", "8", "1"],
+        proc = subprocess.run(PIN + lang.cmd + ["mandelbrot", "8", "1"],
                               capture_output=True, text=True)
         wall = time.perf_counter() - t0
         if proc.returncode != 0:
@@ -1619,17 +1731,27 @@ def main():
 
     ap = argparse.ArgumentParser(
         description="Compare x86-64 assembly / C / C++ / Rust / Swift / Go / Java / "
-                    "C# / JavaScript / Lua / Perl / PHP / Python / Ruby / COBOL "
-                    "on identical work.")
+                    "C# / JavaScript / Lua / Perl / PHP / Python / NumPy / Ruby / "
+                    "COBOL on identical work.")
     ap.add_argument("--scale", type=float, default=None,
                     help="workload multiplier (1.0 = standard)")
     ap.add_argument("--quick", action="store_true", help="tiny workload, for a fast demo")
     ap.add_argument("--heavy", action="store_true", help="the 'massive task' scale")
     ap.add_argument("--reps", type=int, default=None, help="runs per language, best wins")
+    ap.add_argument("--warmup", type=int, default=0, metavar="N",
+                    help="N untimed in-process runs before the timed ones, for "
+                         "the JIT runtimes that honour it (Java, C#, JavaScript) "
+                         "-- the JMH treatment; everyone else ignores it")
+    ap.add_argument("--pin", nargs="?", const=-1, type=int, default=None,
+                    metavar="CORE",
+                    help="pin every benchmark process to one CPU core with "
+                         "taskset (steadier numbers; give a core number, or "
+                         "let it pick the last one)")
     ap.add_argument("--only", default="", help="comma-separated benchmark names")
     ap.add_argument("--skip", default="",
                     help="comma-separated languages to skip (asm, c, cpp, rust, swift, "
-                         "go, java, csharp, js, lua, perl, php, python, ruby, cobol)")
+                         "go, java, csharp, js, lua, perl, php, python, numpy, ruby, "
+                         "cobol)")
     ap.add_argument("--skip-bench", default="",
                     help="comma-separated benchmarks to skip (mandelbrot, sieve, "
                          "quicksort, wordcount, binarytrees, matmul)")
@@ -1653,6 +1775,15 @@ def main():
 
     scale = args.scale if args.scale is not None else (0.08 if args.quick else 6.0 if args.heavy else 1.0)
     reps = args.reps if args.reps is not None else (1 if args.quick else 3)
+    warmup = max(0, args.warmup)
+
+    global PIN
+    if args.pin is not None:
+        if platform.system() == "Linux" and shutil.which("taskset"):
+            core = args.pin if args.pin >= 0 else max(0, (os.cpu_count() or 1) - 1)
+            PIN = ["taskset", "-c", str(core)]
+        else:
+            print(hue("--pin needs Linux and taskset; running unpinned", GOLD))
     only = set(x.strip() for x in args.only.split(",") if x.strip())
     skip = set(x.strip().lower() for x in args.skip.split(",") if x.strip())
     skip_bench = set(x.strip().lower() for x in args.skip_bench.split(",") if x.strip())
@@ -1681,7 +1812,8 @@ def main():
         print()
     print("  " + hue("HOW MUCH DOES YOUR LANGUAGE COST YOU?", GOLD, bold=True)
           if USE_COLOR else "  " + BOLD("HOW MUCH DOES YOUR LANGUAGE COST YOU?"))
-    print("  " + DIM("Identical algorithms, identical input, fifteen languages."))
+    print("  " + DIM("Identical algorithms, identical input, fifteen languages "
+                     "-- and NumPy."))
     print()
     print("  " + neon_rule())
 
@@ -1717,6 +1849,11 @@ def main():
     if reps > 1:
         print("    " + DIM("           (repeats happen inside one process, so the JIT "
                            "gets to warm up)"))
+    if warmup:
+        print("    " + DIM("           (+%d untimed warm-up run%s first for Java, C# "
+                           "and JavaScript)" % (warmup, "" if warmup == 1 else "s")))
+    if PIN:
+        print("    " + DIM("           (every process pinned to core %s)" % PIN[-1]))
     print("    " + hue(u"\u25f4 estimate", STEEL)
           + hue(" about %s of benchmarking ahead"
                 % human_time(est.total(active, benches, scale, reps)), SKY))
@@ -1746,11 +1883,15 @@ def main():
                                         lang.sits_out[bench["key"]]))
                 continue
             label = hue(lang.name.ljust(NAMEW), lang.tint, bold=True)
-            with Meter(label, est.estimate(lang.key, bench, size, reps),
+            # warm-up runs cost wall-clock like any other rep, so the meter
+            # and the timing cache both count them as reps
+            eff_reps = reps + (warmup if lang.warmup else 0)
+            with Meter(label, est.estimate(lang.key, bench, size, eff_reps),
                        tint=lang.tint) as meter:
-                secs, checksum, wall, err = run_one(lang, bench["key"], size, reps)
+                secs, checksum, wall, err = run_one(lang, bench["key"], size,
+                                                    reps, warmup)
                 meter.ok = err is None
-            est.record(lang.key, bench, size, reps, wall)
+            est.record(lang.key, bench, size, eff_reps, wall)
             if err:
                 failures.append(err)
                 continue

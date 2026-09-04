@@ -126,10 +126,11 @@ static long long bench_wordcount(int n) {
         int len = 3 + (int)(rng_next() % 6);
         std::string w(len, ' ');
         for (int c = 0; c < len; c++) w[c] = (char)('a' + rng_next() % 26);
-        words[i] = w;
+        words[i] = std::move(w);
     }
 
     std::unordered_map<std::string, int> counts;
+    counts.reserve(8192);   // sized like every other language's map here
     long long maxc = 0;
     for (int k = 0; k < n; k++) {
         uint32_t ra = rng_next() % VOCAB;

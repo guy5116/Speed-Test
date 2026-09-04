@@ -63,7 +63,9 @@ end
 -- measure memory traffic, so it would not be the same test.
 local function bench_sieve(n)
   local comp = {}
-  for i = 2, n do comp[i] = 0 end
+  -- prefill from 1, not 2: the table's array part doubles on powers of two,
+  -- and starting at 1 keeps it exactly full at each doubling
+  for i = 1, n do comp[i] = 0 end
   local count = 0
   for i = 2, n do
     if comp[i] == 0 then
@@ -124,7 +126,15 @@ end
 local function bench_quicksort(n)
   rng_seed(12345)
   local a = {}
-  for i = 1, n do a[i] = rng_next() end
+  -- PRNG pasted inline with the state held in a local: reference Lua has no
+  -- inliner, and CALL/RETURN plus the upvalue traffic roughly doubles the
+  -- cost of a two-op generator
+  local state = rng_state
+  for i = 1, n do
+    state = state * 6364136223846793005 + 1442695040888963407
+    a[i] = state >> 33
+  end
+  rng_state = state
   quicksort(a, 1, n)
   local h = 0
   for i = 1, n do
@@ -140,19 +150,23 @@ local VOCAB = 5000
 
 local function bench_wordcount(n)
   rng_seed(12345)
+  local char, concat = string.char, table.concat  -- skip the global lookups
   local words = {}
   local buf = {}
   for i = 1, VOCAB do
     local len = 3 + rng_next() % 6
-    for c = 1, len do buf[c] = string.char(97 + rng_next() % 26) end
-    words[i] = table.concat(buf, "", 1, len)
+    for c = 1, len do buf[c] = char(97 + rng_next() % 26) end
+    words[i] = concat(buf, "", 1, len)
   end
 
   local counts = {}
   local distinct, maxc = 0, 0
+  local state = rng_state  -- PRNG inlined; see bench_quicksort
   for _ = 1, n do
-    local ra = rng_next() % VOCAB
-    local rb = rng_next() % VOCAB
+    state = state * 6364136223846793005 + 1442695040888963407
+    local ra = (state >> 33) % VOCAB
+    state = state * 6364136223846793005 + 1442695040888963407
+    local rb = (state >> 33) % VOCAB
     local w = words[(ra * rb) // VOCAB + 1]   -- triangular, so counts vary
     local c = counts[w]
     if c == nil then
@@ -164,20 +178,25 @@ local function bench_wordcount(n)
     counts[w] = c
     if c > maxc then maxc = c end
   end
+  rng_state = state
   return distinct * 1000003 + maxc
 end
 
 -- ---------- 5. binary trees: allocation, pointer chasing, garbage collection ----------
 -- Nothing here computes; the entire cost is allocating little tables and
 -- letting the GC take them back.
+-- Children live in the table's array part ({a, b}), not the hash part
+-- ({l = a, r = b}): half the bytes per node -- which is half the GC work on
+-- the benchmark that is nothing but GC work -- and t[1] compiles to a direct
+-- GETI where t.l walks a hash bucket. Same shape as bench.rb and bench.pl.
 local function make_tree(d)
-  if d == 0 then return { l = false, r = false } end
-  return { l = make_tree(d - 1), r = make_tree(d - 1) }
+  if d == 0 then return { false, false } end
+  return { make_tree(d - 1), make_tree(d - 1) }
 end
 
 local function check_tree(t)
-  if not t.l then return 1 end
-  return 1 + check_tree(t.l) + check_tree(t.r)
+  if not t[1] then return 1 end
+  return 1 + check_tree(t[1]) + check_tree(t[2])
 end
 
 local function bench_binarytrees(n)
@@ -193,14 +212,24 @@ end
 local function bench_matmul(n)
   rng_seed(12345)
   local a, b, c = {}, {}, {}
-  for i = 1, n * n do a[i] = rng_next() % 100 end
-  for i = 1, n * n do b[i] = rng_next() % 100 end
+  local state = rng_state  -- PRNG inlined; see bench_quicksort
+  for i = 1, n * n do
+    state = state * 6364136223846793005 + 1442695040888963407
+    a[i] = (state >> 33) % 100
+  end
+  for i = 1, n * n do
+    state = state * 6364136223846793005 + 1442695040888963407
+    b[i] = (state >> 33) % 100
+  end
+  rng_state = state
   for i = 0, n - 1 do
     local ib = i * n
     for j = 1, n do
       local s = 0
+      local bi = j  -- walks b down the column; saves a SUB, MUL and ADD per step
       for k = 1, n do
-        s = s + a[ib + k] * b[(k - 1) * n + j]
+        s = s + a[ib + k] * b[bi]
+        bi = bi + n
       end
       c[ib + j] = s
     end

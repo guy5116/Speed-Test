@@ -1,8 +1,11 @@
 # How much does your language cost you?
 
 Fifteen languages — **x86-64 assembly, C, C++, Rust, Swift, Go, Java, C#,
-JavaScript, Lua, Perl, PHP, Python, Ruby, COBOL** — running the *same six
-algorithms* on the *same input*, timed side by side.
+JavaScript, Lua, Perl, PHP, Python, Ruby, COBOL** — plus a **NumPy** row for
+Python, running the *same six algorithms* on the *same input*, timed side by
+side. Every entry runs at its shipped best: `-O3` and `-march=native` where
+there is a compiler, the tracing JIT for PHP, YJIT for Ruby — so a slow row
+is the language's bill, not the code's.
 
 The goal is to make the difference **feel** real. Ratios like "40×" slide off
 the brain. "Your overnight job finishes next Tuesday" does not.
@@ -93,7 +96,7 @@ looks like this:
 *(Real output, 12-core x86-64 Linux: gcc/g++ 15.3, rustc 1.97, go 1.26,
 OpenJDK 21, node 24, Lua 5.4, CPython 3.14. Whole run: 1 min 57 sec. This
 sample predates the Perl, Ruby, Swift and COBOL entries and benchmarks 5 and
-6 — run it yourself for the full fifteen-language table. Your numbers will
+6 — run it yourself for the full sixteen-row table. Your numbers will
 differ anyway; that is the point of shipping the runner rather than a
 screenshot.)*
 
@@ -143,20 +146,21 @@ measures arithmetic.
 
 | | Why it is in the list |
 |---|---|
-| **Assembly** | The control group. Hand-written x86-64, no compiler at all — every instruction that runs is one somebody typed. Where `gcc -O2` beats it (and on some benchmarks it does), the gap is the measured value of fifty years of compiler engineering; where they tie, the benchmark was memory-bound all along. Linux only, and it links libc for `malloc` and `printf` like everyone else. |
+| **Assembly** | The control group. Hand-written x86-64, no compiler at all — every instruction that runs is one somebody typed. Where `gcc -O3` beats it (and on some benchmarks it does), the gap is the measured value of fifty years of compiler engineering; where they tie, the benchmark was memory-bound all along. Linux only, and it links libc for `malloc` and `printf` like everyone else. |
 | **C** | The floor. Also the language that has to hand-roll a hash table to play. |
 | **C++** | C's numbers with `std::unordered_map` and `std::vector` instead of `malloc`. The abstraction is supposed to be free; benchmark 4 says how free. |
-| **Rust** | Bounds-checked on every index, no `unsafe`, no crates, plain `rustc -O`. Prices the safety directly. Its `HashMap` also defaults to SipHash — cryptographically strong and slower than everyone else's — which is why benchmark 4 is its worst row and why `ahash`/`FxHash` exist. |
-| **Swift** | The same deal as Rust — bounds-checked arrays, no unsafe code, bare `swiftc -O`, no Foundation — with one big difference: ARC. Benchmark 5 is the row to watch, because Swift pays a retain/release toll on every object where a tracing GC pays in bursts; that is CPython's memory story at compiled-language speed. Its `Dictionary` also hashes with SipHash like Rust's, so benchmark 4 carries the same tax. The `&*`/`&+` wrapping operators run the shared PRNG natively. |
+| **Rust** | Bounds-checked on every index, no `unsafe`, no crates, `rustc` at a tuned release profile (`opt-level=3`, `target-cpu=native`, one codegen unit). Prices the safety directly. Its `HashMap` also defaults to SipHash — cryptographically strong and slower than everyone else's — which is why benchmark 4 is its worst row and why `ahash`/`FxHash` exist. |
+| **Swift** | The same deal as Rust — no unsafe code, no Foundation — with two differences. First, it builds `-Ounchecked`: Swift's supported flag for waiving the bounds and overflow checks `-O` keeps, a shortcut Rust only offers by rewriting the source with `unsafe` (rebuild with `-O` to see what the checks cost). Second, and bigger: ARC. Benchmark 5 is the row to watch, because Swift pays a retain/release toll on every object where a tracing GC pays in bursts; that is CPython's memory story at compiled-language speed. Its `Dictionary` also hashes with SipHash like Rust's, so benchmark 4 carries the same tax. The `&*`/`&+` wrapping operators run the shared PRNG natively. |
 | **Go** | Compiled with a GC and a fast build. Note that this suite is single-threaded, which is the one thing Go is famous for making easy — so it *understates* Go badly. |
 | **Java** | The JIT. Cold it looks like a scripting language; warm it looks like C. Watching that gap close between `--quick` and the standard scale is the most instructive thing in the suite. |
 | **C#** | The other managed-runtime JIT, with one honest advantage over Java here: real unsigned integers. `ulong` and `uint` run the shared PRNG and the quicksort with no sign gymnastics at all, and the .NET JIT prices within a few percent of the JVM on most rows. |
 | **JavaScript** | The other JIT, and a reminder that "scripting language" says nothing about speed. Its handicap here is arithmetic, not dispatch: JS has no fast 64-bit integer, so the shared PRNG has to be assembled from 32-bit halves (see below). |
 | **Lua** | The small interpreter done well. Roughly the same *design* as CPython — a bytecode VM, dynamic types, tables everywhere — and several times faster at it, which is a useful counterweight to "interpreted languages are slow". |
 | **Perl** | The original scripting language, still gluing Unix together. Its hash and string machinery is C and fast — benchmark 4 is its best row, where it routinely beats Python — and its numeric loops are the bill: benchmark 6 is among the slowest rows in the suite. It needed two judgement calls to play (`use integer`, `vec()`), noted below. |
-| **PHP** | The language serving most of the web, on the same footing as its peers for once. PHP 8's interpreter is markedly quicker than CPython's on these loops, and benchmark 4 runs on its native associative array. Its handicap is the same one JavaScript has: ints are signed 64-bit and *overflow to float*, so the shared PRNG is assembled from 32-bit halves (see below). |
-| **Ruby** | Plain CRuby, whatever `ruby` does by default — no gems, no flags. Ruby 3 ships YJIT but does not enable it; run with `RUBYOPT=--yjit` to watch the rows move, the same way LuaJIT would move Lua's (and, like LuaJIT, that is a different measurement). |
+| **PHP** | The language serving most of the web, on the same footing as its peers for once — and at full strength: the runner switches on the tracing JIT that ships inside opcache but sleeps on the CLI by default. Benchmark 4 runs on its native associative array. Its handicap is the same one JavaScript has: ints are signed 64-bit and *overflow to float*, so the shared PRNG is assembled from 32-bit halves (see below). |
+| **Ruby** | CRuby with YJIT on. The JIT has shipped inside every standard Ruby since 3.1 and simply defaults to off; the runner enables it the same way it hands gcc `-O3`, so this row is Ruby at its own shipped best — not a lab build, the way LuaJIT would be for Lua. |
 | **Python** | The ceiling on interpreter overhead, and the language most people actually reach for. Read the caveats before quoting its numbers. |
+| **NumPy** | Python's defence, measured instead of asserted. The exact same interpreter as the row above, with the loops handed to NumPy so they run as C — and, for matmul, as BLAS, which tends to win that benchmark outright. It enters the three benchmarks that have an honest vectorised form (mandelbrot, sieve, matmul) and sits the others out rather than cheat them (see the honesty rails). The gap between this row and the Python row is the interpreter tax; the gap between this row and C is what the escape hatch actually costs. |
 | **COBOL** | The oldest language here by decades, still clearing your card payments, compiled to native code via C by GnuCOBOL. The parts of the suite that are moves, compares and adds run near C speed — it all but *ties C on benchmark 5*, since that one is really timing libc's allocator. The bill is arithmetic: COBOL's is decimal, so every multiply routes through GMP, and floating point costs microseconds an operation — which is why the runner sits it out of mandelbrot (see below). A language built for money math, priced here on loops it was never meant to run — and, like the assembly entry, useful mostly as a control group. |
 
 ---
@@ -165,7 +169,7 @@ measures arithmetic.
 
 A language benchmark is very easy to accidentally rig. Guards used here:
 
-**Every language prints a checksum.** All fifteen compute the same value from the
+**Every language prints a checksum.** All sixteen entries compute the same value from the
 same deterministic PRNG (an identical 64-bit LCG in each file). If the
 checksums ever disagree, the runner prints `CHECKSUMS DISAGREE` and tells you
 the comparison is invalid. This also stops C's optimizer from deleting a loop
@@ -216,11 +220,15 @@ than wall time. For a single-threaded compute loop those are the same number.)
 hand-written — no `qsort`, no `std::sort`, no `sort_unstable`, no
 `table.sort`, no `Arrays.sort`. Benchmark 3 is there to measure the language,
 and a sort-library shootout is a different and also interesting test that this
-is deliberately not.
+is deliberately not. The NumPy row is the one sanctioned exception, and it is
+fenced: it exists precisely to measure the library escape hatch, it still has
+to match every checksum bit for bit, and wherever the library would replace
+the *algorithm* rather than the loop — the hand-written quicksort, the string
+hash map, the tree allocation — it sits out with a note instead of pretending.
 
 ---
 
-## Where the fifteen files genuinely differ
+## Where the sixteen files genuinely differ
 
 A few places where "identical algorithm" needed a judgement call. All of them
 are visible in the source, and all of them are noted here rather than buried.
@@ -296,10 +304,19 @@ a Ruby array 8+, so `bench.pl` pokes a string with `vec()`, `bench.php`
 indexes a mutable string one byte at a time, and `bench.rb` uses
 `String#getbyte`/`setbyte` — the same reasoning as JavaScript's typed arrays:
 these are the languages' honest equivalents of C's `unsigned char*`, not a
-trick. Perl also scopes `use integer` around the shared PRNG to get native
-64-bit wrapping arithmetic; on a 32-bit perl the bits would come out
-differently, and the runner would catch the checksum mismatch and refuse the
-comparison.
+trick. (One asymmetry inside that choice: Perl *reads* through `vec()` but
+*stores* through 4-arg `substr`, because an lvalue `vec` assignment routes
+through Perl's magic-SV machinery and measures at twice the cost of the whole
+loop around it.) Perl also scopes `use integer` around its integer-heavy
+loops to get native 64-bit wrapping arithmetic; on a 32-bit perl the bits
+would come out differently, and the runner would catch the checksum mismatch
+and refuse the comparison. Ruby's integers go arbitrary-precision past 2^62,
+which would put the shared PRNG's full-width multiply in Bignum — three heap
+allocations per call — so `bench.rb` keeps the state in two 32-bit halves and
+multiplies in 16-bit limbs, the same decomposition `bench.js` and `bench.php`
+use for their own overflow reasons. Perl, PHP, Lua and Ruby also paste the
+two-line PRNG inline in their hottest loops: none of the four has an inliner,
+and a function call around two arithmetic ops costs more than the ops.
 
 `bench.php` additionally sets `memory_limit` to `-1` for itself. That *is*
 the documented CLI default, but distro `php.ini` files (Nix, Debian) often
@@ -324,8 +341,10 @@ Please read this section before quoting the output at anyone.
 
 **"Python is 30× slower than C" is false as a general claim.** It is true for
 a hand-written numeric loop, which is precisely the thing you should never
-write in pure Python. Rewrite benchmark 1 with NumPy and it drops to roughly
-2–3× — because the loop then runs in C. Real Python programs spend most of
+write in pure Python. The NumPy row is that rewrite, measured: the same
+interpreter lands within a small factor of C on mandelbrot and the sieve, and
+on matmul it tends to *win outright* — BLAS is the fastest matmul on the
+machine in any language. Real Python programs spend most of
 their time in C extensions, and their real-world gap is usually far smaller
 than benchmark 1 suggests. **Benchmark 4 is the more representative number for
 typical code.**
@@ -361,8 +380,9 @@ interpreter design, and nothing about which one you should write your program
 in — Lua's whole standard library is smaller than Python's `csv` module. Perl
 and Ruby each have benchmarks where they beat Python and benchmarks where they
 lose to it, which is exactly why the suite reports per-benchmark rows instead
-of one number. And the Lua row here is *reference Lua*, the Ruby row is
-*non-YJIT CRuby*; LuaJIT and `--yjit` would rewrite them both.
+of one number. And the Lua row here is *reference Lua* — LuaJIT would rewrite
+it, but cannot reproduce the shared PRNG (see above) — while the Ruby row runs
+with YJIT on, since that JIT ships in the standard binary.
 
 **The result depends on your machine.** CPU, cache sizes, compiler version and
 what else is running all move these numbers. Run it yourself; don't trust a
@@ -379,20 +399,21 @@ frequently, and correctly, irrelevant.
 
 ```
 bench.asm     Assembly     nasm -felf64, linked against libc (x86-64 Linux only)
-bench.c       C            gcc -O2 -march=native
-bench.cpp     C++          g++ -O2 -march=native -std=c++17
-bench.rs      Rust         rustc -O          (no Cargo, no crates, no unsafe)
-bench.swift   Swift        swiftc -O         (no packages, no Foundation)
-bench.go      Go           go build
+bench.c       C            gcc -O3 -march=native
+bench.cpp     C++          g++ -O3 -march=native -std=c++17
+bench.rs      Rust         rustc -Copt-level=3 -Ctarget-cpu=native (no Cargo, no crates, no unsafe)
+bench.swift   Swift        swiftc -Ounchecked (no packages, no Foundation)
+bench.go      Go           go build, GOAMD64=v3 on x86-64
 Bench.java    Java         javac
-bench.cs      C#           dotnet build (run.py generates the csproj in build/)
+bench.cs      C#           dotnet build -c Release, server GC (run.py generates the csproj in build/)
 bench.js      JavaScript   node, no flags
 bench.lua     Lua          lua 5.3+, reference interpreter
 bench.pl      Perl         perl 5, core modules only
-bench.php     PHP          php CLI, default config
+bench.php     PHP          php CLI + opcache tracing JIT
 bench.py      Python       plain interpreter, no numpy
-bench.rb      Ruby         plain CRuby, no gems, no YJIT flag
-bench.cob     COBOL        cobc -x -O2 -fno-trunc -fstatic-call (GnuCOBOL 3+)
+bench_numpy.py  NumPy      the same python3, loops in NumPy/BLAS (enters 3 of the 6)
+bench.rb      Ruby         ruby --yjit
+bench.cob     COBOL        cobc -x -O3 -fno-trunc -fstatic-call (GnuCOBOL 3+)
 run.py        builds, runs, compares, prints
 ```
 
@@ -455,15 +476,18 @@ only needs two languages present to have something to compare.
 - **JavaScript** — `node`
 - **Lua** — `lua` **5.3 or newer**; LuaJIT and 5.1/5.2 are detected and skipped
 - **Perl** — `perl` 5, a 64-bit build (core modules only; the PRNG needs 64-bit integers)
-- **PHP** — `php` 7.3 or newer (needs `hrtime`; no extensions)
+- **PHP** — `php` 7.3 or newer (needs `hrtime`; the runner enables opcache's
+  tracing JIT when the extension is present, and runs without it otherwise)
 - **Python** — `python3` (also required to run `run.py` itself)
+- **NumPy** — any `python3` that can `import numpy` (the row is skipped with a
+  note otherwise)
 - **Ruby** — `ruby`
 - **COBOL** — GnuCOBOL **3 or newer** (`cobc`), plus a little-endian machine
   for the PRNG's `REDEFINES` overlay — every x86-64 and mainstream ARM box
   qualifies (a checksum mismatch, not a wrong result, if it ever doesn't)
 
 Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
-(6 GB at `--heavy`) — see "Where the fifteen files genuinely differ" above.
+(6 GB at `--heavy`) — see "Where the sixteen files genuinely differ" above.
 
 ## Options
 
@@ -472,6 +496,11 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
 --heavy            6x the standard workload (needs ~6 GB free if Lua is in)
 --scale N          arbitrary multiplier (--scale 50 for something brutal)
 --reps N           runs per language, fastest wins (default 3)
+--warmup N         N untimed in-process runs before the timed ones, honoured
+                   by the JIT runtimes (Java, C#, JavaScript) -- the JMH
+                   treatment for cold-start complaints
+--pin [CORE]       pin every benchmark process to one CPU core via taskset
+                   (steadier numbers, the way the Benchmarks Game runs)
 --only a,b         just these benchmarks
 --skip-bench a,b   exclude benchmarks, keep everything else
 --skip python,lua  exclude languages, e.g. when they are the slow part
@@ -482,7 +511,8 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
 ```
 
 `--skip` takes either key or name: `asm c cpp rust swift go java csharp js
-lua perl php python ruby cobol`, or `assembly`, `c++`, `c#`, `javascript`.
+lua perl php python numpy ruby cobol`, or `assembly`, `c++`, `c#`,
+`javascript`.
 `--skip-bench` takes benchmark keys: `mandelbrot sieve quicksort wordcount
 binarytrees matmul` — the complement of `--only`, for when you want to drop
 one or two rather than name the rest.

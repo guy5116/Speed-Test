@@ -33,7 +33,9 @@ function rngSeed(s) {
 
 function rngNext() {
   const aLo = stateLo, aHi = stateHi;
-  // 32x32 -> 64 of the low halves, via 16-bit limbs
+  // the low 32 bits of aLo*MUL_LO come out of one Math.imul; the 16-bit
+  // limbs below exist only to recover the carry out of those 32 bits
+  const mulLo = Math.imul(aLo, MUL_LO) >>> 0;
   const a0 = aLo & 0xffff, a1 = aLo >>> 16;
   const b0 = MUL_LO & 0xffff, b1 = MUL_LO >>> 16;
   const p0 = a0 * b0;
@@ -41,7 +43,6 @@ function rngNext() {
   let carry = p1 >>> 16;
   const p1b = (p1 & 0xffff) + a0 * b1;
   carry += p1b >>> 16;
-  const mulLo = (((p1b & 0xffff) << 16) | (p0 & 0xffff)) >>> 0;
   // high half: carry + a1*b1 + the two cross terms that only affect bits 32+
   const mulHi = (carry + a1 * b1 + Math.imul(aLo, MUL_HI) + Math.imul(aHi, MUL_LO)) >>> 0;
 
@@ -196,7 +197,8 @@ function benchMatmul(n) {
     const ib = i * n;
     for (let j = 0; j < n; j++) {
       let s = 0;
-      for (let k = 0; k < n; k++) s += a[ib + k] * b[k * n + j];
+      let bk = j; // walks b down the column; saves a multiply per step
+      for (let k = 0; k < n; k++) { s += a[ib + k] * b[bk]; bk += n; }
       c[ib + j] = s;
     }
   }
@@ -224,12 +226,18 @@ function main() {
   const size = parseInt(argv[1], 10);
   let reps = argv.length > 2 ? parseInt(argv[2], 10) : 1;
   if (!(reps >= 1)) reps = 1;
+  let warmup = argv.length > 3 ? parseInt(argv[3], 10) : 0;
+  if (!(warmup >= 0)) warmup = 0;
 
   const fn = BENCHMARKS[name];
   if (!fn) {
     process.stderr.write('unknown benchmark: ' + name + '\n');
     return 2;
   }
+
+  // Untimed warm-up (run.py --warmup): lets TurboFan finish optimizing
+  // before the clock starts. Deterministic work, results discarded.
+  for (let w = 0; w < warmup; w++) fn(size);
 
   // Best-of-N: the fastest run is the one least polluted by scheduler noise,
   // cold caches and (for the JIT languages) not-yet-compiled code.

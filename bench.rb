@@ -7,27 +7,45 @@
 # Same algorithm, same deterministic input, same checksum as every other
 # bench.* in this suite.
 #
-# Plain CRuby, no gems, no YJIT flag -- whatever `ruby` does by default is
-# what gets measured, the same deal Python and Lua get. Like Python, Ruby
-# has arbitrary-precision integers, so the shared 64-bit PRNG is a multiply
-# and a mask rather than native wraparound. The sieve uses a String as its
-# byte array (getbyte/setbyte): a Ruby Array would work, but at 8+ bytes per
-# entry it is a different data structure, not a slower one -- the same
-# reasoning as JavaScript's typed arrays and Perl's vec().
+# Plain CRuby, no gems; the runner turns on YJIT when the build has it.
+# Ruby's integers go arbitrary-precision past 2^62, so the shared PRNG's
+# full-width 64-bit multiply would run in Bignum -- three heap allocations
+# per call, and a YJIT side-exit on every one. The state therefore lives in
+# two 32-bit halves and the multiply runs in 16-bit limbs, every intermediate
+# comfortably Fixnum -- the same trick bench.js and bench.php use, produced
+# by the same constraint. The sieve uses a String as its byte array
+# (getbyte/setbyte): a Ruby Array would work, but at 8+ bytes per entry it is
+# a different data structure, not a slower one -- the same reasoning as
+# JavaScript's typed arrays and Perl's vec().
 
-MASK64 = (1 << 64) - 1
 MASK32 = (1 << 32) - 1
 
 # ---------- shared deterministic PRNG (identical in every language here) ----------
-$rng_state = 0
+# A = 0x5851F42D_4C957F2D, C = 0x14057B7E_F767814F, state = hi:lo.
+
+$rng_lo = 0
+$rng_hi = 0
 
 def rng_seed(s)
-  $rng_state = s
+  $rng_lo = s & 0xFFFFFFFF
+  $rng_hi = (s >> 32) & 0xFFFFFFFF
 end
 
 def rng_next
-  $rng_state = ($rng_state * 6364136223846793005 + 1442695040888963407) & MASK64
-  $rng_state >> 33 # top 31 bits
+  lo = $rng_lo
+  hi = $rng_hi
+  p0 = lo * 0x7F2D                       # lo * A_lo, 16 bits at a time
+  p1 = lo * 0x4C95
+  t = p0 + ((p1 & 0xFFFF) << 16)
+  carry = (t >> 32) + (p1 >> 16)
+  new_lo = t & 0xFFFFFFFF
+  new_hi = (carry +
+            lo * 0xF42D + (((lo * 0x5851) & 0xFFFF) << 16) +  # + lo * A_hi
+            hi * 0x7F2D + (((hi * 0x4C95) & 0xFFFF) << 16))   # + hi * A_lo
+  t = new_lo + 0xF767814F                # + C, with carry into the high word
+  $rng_lo = t & 0xFFFFFFFF
+  $rng_hi = (new_hi + 0x14057B7E + (t >> 32)) & 0xFFFFFFFF
+  $rng_hi >> 1                           # the state's top 31 bits
 end
 
 # ---------- 1. mandelbrot: tight floating-point loop, zero allocation ----------
@@ -128,7 +146,12 @@ end
 
 def bench_quicksort(n)
   rng_seed(12345)
-  a = Array.new(n) { rng_next }
+  a = Array.new(n, 0)
+  k = 0
+  while k < n # while, not a block: no 4M yields, no captured locals
+    a[k] = rng_next
+    k += 1
+  end
   quicksort(a, 0, n - 1)
   h = 0
   k = 0
@@ -155,12 +178,14 @@ def bench_wordcount(n)
 
   counts = Hash.new(0)
   maxc = 0
-  n.times do
+  k = 0
+  while k < n # while, not n.times: the block would heap-allocate the env
     ra = rng_next % VOCAB
     rb = rng_next % VOCAB
     w = words[(ra * rb) / VOCAB] # triangular, so counts vary
     c = (counts[w] += 1)
     maxc = c if c > maxc
+    k += 1
   end
   counts.size * 1000003 + maxc
 end
@@ -193,9 +218,20 @@ end
 # ---------- 6. matmul: triple-nested loops over flat 2D arrays ----------
 def bench_matmul(n)
   rng_seed(12345)
-  a = Array.new(n * n) { rng_next % 100 }
-  b = Array.new(n * n) { rng_next % 100 }
-  c = Array.new(n * n, 0)
+  nn = n * n
+  a = Array.new(nn, 0)
+  b = Array.new(nn, 0)
+  c = Array.new(nn, 0)
+  k = 0
+  while k < nn
+    a[k] = rng_next % 100
+    k += 1
+  end
+  k = 0
+  while k < nn
+    b[k] = rng_next % 100
+    k += 1
+  end
   i = 0
   while i < n
     ib = i * n
@@ -203,8 +239,10 @@ def bench_matmul(n)
     while j < n
       s = 0
       k = 0
+      bi = j # walks b down the column; saves a multiply per inner step
       while k < n
-        s += a[ib + k] * b[k * n + j]
+        s += a[ib + k] * b[bi]
+        bi += n
         k += 1
       end
       c[ib + j] = s
@@ -213,7 +251,11 @@ def bench_matmul(n)
     i += 1
   end
   h = 0
-  c.each { |v| h = (h * 31 + v) & MASK32 }
+  k = 0
+  while k < nn
+    h = (h * 31 + c[k]) & MASK32
+    k += 1
+  end
   h
 end
 

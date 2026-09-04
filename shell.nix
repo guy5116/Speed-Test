@@ -10,7 +10,7 @@ in
 # assembly entries still resolve from your system profile.
 (swiftPkgs.mkShell.override { stdenv = swiftPkgs.swiftPackages.stdenv; }) {
   packages = [
-    pkgs.python314
+    (pkgs.python314.withPackages (ps: [ ps.numpy ]))  # one interpreter serves bench.py and bench_numpy.py
     pkgs.rustc
     pkgs.lua5_4
     pkgs.perl
