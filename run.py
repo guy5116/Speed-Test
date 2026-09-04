@@ -1630,6 +1630,9 @@ def main():
     ap.add_argument("--skip", default="",
                     help="comma-separated languages to skip (asm, c, cpp, rust, swift, "
                          "go, java, csharp, js, lua, perl, php, python, ruby, cobol)")
+    ap.add_argument("--skip-bench", default="",
+                    help="comma-separated benchmarks to skip (mandelbrot, sieve, "
+                         "quicksort, wordcount, binarytrees, matmul)")
     ap.add_argument("--sorted", action="store_true",
                     help="list each benchmark's times quickest to slowest "
                          "instead of in language order")
@@ -1652,10 +1655,20 @@ def main():
     reps = args.reps if args.reps is not None else (1 if args.quick else 3)
     only = set(x.strip() for x in args.only.split(",") if x.strip())
     skip = set(x.strip().lower() for x in args.skip.split(",") if x.strip())
+    skip_bench = set(x.strip().lower() for x in args.skip_bench.split(",") if x.strip())
 
-    benches = [b for b in BENCHMARKS if not only or b["key"] in only]
+    unknown = skip_bench - set(b["key"] for b in BENCHMARKS)
+    if unknown:
+        print(hue("unknown benchmark(s) in --skip-bench: %s" % ", ".join(sorted(unknown)),
+                  CORAL, bold=True))
+        print(DIM("  known: " + ", ".join(b["key"] for b in BENCHMARKS)))
+        return 1
+
+    benches = [b for b in BENCHMARKS
+               if (not only or b["key"] in only) and b["key"] not in skip_bench]
     if not benches:
-        print(hue("no benchmarks match --only %s" % args.only, CORAL, bold=True))
+        print(hue("no benchmarks left after --only %s / --skip-bench %s"
+                  % (args.only or "(all)", args.skip_bench or "(none)"), CORAL, bold=True))
         return 1
 
     # ---- header ----

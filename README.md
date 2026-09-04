@@ -473,6 +473,7 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
 --scale N          arbitrary multiplier (--scale 50 for something brutal)
 --reps N           runs per language, fastest wins (default 3)
 --only a,b         just these benchmarks
+--skip-bench a,b   exclude benchmarks, keep everything else
 --skip python,lua  exclude languages, e.g. when they are the slow part
 --racing           grand prix mode: every language is a racecar, each
                    benchmark replays as an animated race, podium at the end
@@ -482,6 +483,9 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
 
 `--skip` takes either key or name: `asm c cpp rust swift go java csharp js
 lua perl php python ruby cobol`, or `assembly`, `c++`, `c#`, `javascript`.
+`--skip-bench` takes benchmark keys: `mandelbrot sieve quicksort wordcount
+binarytrees matmul` — the complement of `--only`, for when you want to drop
+one or two rather than name the rest.
 COBOL roughly doubles the standard run's wall time all by itself; `--skip
 cobol` when that stops being funny.
 
