@@ -7,7 +7,7 @@
 *>
 *> Same algorithm, same deterministic input, same checksum as every other
 *> bench.* in this suite. GnuCOBOL 3+, compiled to native code via C with
-*>     cobc -x -O2 -fno-trunc -fstatic-call
+*>     cobc -x -free -O2 -fno-trunc -fstatic-call
 *> (-fno-trunc gives binary fields C-style wraparound instead of decimal
 *> truncation; -fstatic-call links CALL "malloc"/"free"/"clock_gettime"
 *> straight to libc).
@@ -126,8 +126,11 @@ WORKING-STORAGE SECTION.
 
 *> ---------- 3. quicksort ----------
 01 QS-PTR           USAGE POINTER.
+*> the declared bound only feeds cobc's compile-time size check -- the
+*> table is BASED, malloc'd to the real size at run time, subscripts
+*> unchecked -- and GnuCOBOL 3.1 caps any one item at 256 MiB, so stay under
 01 QS-TAB BASED.
-   05 QS-EL         USAGE BINARY-LONG UNSIGNED OCCURS 100000000 TIMES.
+   05 QS-EL         USAGE BINARY-LONG UNSIGNED OCCURS 64000000 TIMES.
 01 QS-STATE.
    05 QS-BYTES      USAGE BINARY-DOUBLE.
    05 QS-SP         USAGE BINARY-LONG.

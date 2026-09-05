@@ -735,14 +735,16 @@ def build_all(skip):
         exe = os.path.join(BUILD, "bench_cobol")
         src = os.path.join(HERE, "bench.cob")
         if not fresh(exe, src):
+            # -free: pre-3.2 cobc won't read the >>SOURCE FORMAT FREE
+            #   directive at column 1 while still in fixed-format mode
             # -fno-trunc: C-style binary wraparound instead of decimal truncation
             #   (spelled -fnotrunc before GnuCOBOL 3.2)
             # -fstatic-call: CALL "malloc"/"free"/"clock_gettime" link straight to libc
             # -O3 arrived with GnuCOBOL 3; older cobc still knows -O2
             for opt, trunc in (("-O3", "-fno-trunc"), ("-O3", "-fnotrunc"),
                                ("-O2", "-fnotrunc")):
-                proc = subprocess.run([cobc, "-x", opt, trunc, "-fstatic-call",
-                                       "-o", exe, src],
+                proc = subprocess.run([cobc, "-x", "-free", opt, trunc,
+                                       "-fstatic-call", "-o", exe, src],
                                       capture_output=True, text=True)
                 if proc.returncode == 0:
                     break
