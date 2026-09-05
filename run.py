@@ -639,6 +639,7 @@ def build_all(skip):
              ' && (opcache_get_status()["jit"]["enabled"] ?? false)));'],
             capture_output=True, text=True)
         lang.available = True
+        lang.warmup = True
         if probe.returncode == 0:
             lang.cmd = [php] + jit + [os.path.join(HERE, "bench.php")]
             lang.note = "opcache JIT (tracing)"
@@ -711,6 +712,7 @@ def build_all(skip):
              "exit(defined?(RubyVM::YJIT) && RubyVM::YJIT.enabled? ? 0 : 1)"],
             capture_output=True, text=True)
         lang.available = True
+        lang.warmup = True
         if probe.returncode == 0:
             lang.cmd = [ruby] + yjit + [os.path.join(HERE, "bench.rb")]
             lang.note = "CRuby + YJIT"
@@ -1866,8 +1868,8 @@ def main():
     ap.add_argument("--reps", type=int, default=None, help="runs per language, best wins")
     ap.add_argument("--warmup", type=int, default=0, metavar="N",
                     help="N untimed in-process runs before the timed ones, for "
-                         "the JIT runtimes that honour it (Java, C#, JavaScript) "
-                         "-- the JMH treatment; everyone else ignores it")
+                         "the JIT runtimes that honour it (Java, C#, JavaScript, "
+                         "PHP, Ruby) -- the JMH treatment; everyone else ignores it")
     ap.add_argument("--pin", nargs="?", const=-1, type=int, default=None,
                     metavar="CORE",
                     help="pin every benchmark process to one CPU core with "
@@ -2035,8 +2037,9 @@ def main():
         print("    " + DIM("           (repeats happen inside one process, so the JIT "
                            "gets to warm up)"))
     if warmup:
-        print("    " + DIM("           (+%d untimed warm-up run%s first for Java, C# "
-                           "and JavaScript)" % (warmup, "" if warmup == 1 else "s")))
+        print("    " + DIM("           (+%d untimed warm-up run%s first for the JIT "
+                           "runtimes: Java, C#, JavaScript, PHP, Ruby)"
+                           % (warmup, "" if warmup == 1 else "s")))
     if PIN:
         print("    " + DIM("           (every process pinned to core %s)" % PIN[-1]))
     print("    " + hue(u"\u25f4 estimate", STEEL)

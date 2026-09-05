@@ -542,8 +542,8 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
 --scale N          arbitrary multiplier (--scale 50 for something brutal)
 --reps N           runs per language, fastest wins (default 3)
 --warmup N         N untimed in-process runs before the timed ones, honoured
-                   by the JIT runtimes (Java, C#, JavaScript) -- the JMH
-                   treatment for cold-start complaints
+                   by the JIT runtimes (Java, C#, JavaScript, PHP, Ruby) --
+                   the JMH treatment for cold-start complaints
 --pin [CORE]       pin every benchmark process to one CPU core via taskset
                    (steadier numbers, the way the Benchmarks Game runs; note
                    it also squeezes JIT compiler threads onto that core)
