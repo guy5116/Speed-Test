@@ -1894,6 +1894,13 @@ def main():
     ap.add_argument("--skip-bench", default="",
                     help="comma-separated benchmarks to skip (mandelbrot, sieve, "
                          "quicksort, wordcount, binarytrees, matmul)")
+    ap.add_argument("--strict", action="store_true",
+                    help="exit non-zero if any language fails, times out, or is "
+                         "missing from --require (for CI; checksum failures "
+                         "always exit non-zero)")
+    ap.add_argument("--require", default="",
+                    help="comma-separated language keys that must be available; "
+                         "with --strict, a missing one fails the run")
     ap.add_argument("--sorted", action="store_true",
                     help="list each benchmark's times quickest to slowest "
                          "instead of in language order")
@@ -1973,6 +1980,13 @@ def main():
             print("    %s %s  %s" % (cross, DIM(lang.name.ljust(NAMEW)),
                                      hue(lang.reason, GOLD)))
     active = [l for l in langs if l.available]
+    required = set(x.strip().lower() for x in args.require.split(",") if x.strip())
+    missing = required - set(l.key for l in active)
+    if missing:
+        print("  " + hue("required language(s) missing: %s" % ", ".join(sorted(missing)),
+                         CORAL, bold=True))
+        if args.strict:
+            return 1
     if len(active) < 2:
         print(hue("\n  Need at least two working languages to compare. Nothing to do.",
                   CORAL, bold=True))
@@ -2046,6 +2060,7 @@ def main():
     results = {}   # bench key -> {lang key: seconds}
     sizes, checkvals = {}, {}      # per bench key, for the report
     rss_all = {}   # bench key -> {lang key: peak MB}
+    invalid, errors = 0, 0
     total_wall = time.perf_counter()
 
     for idx, bench in enumerate(benches, 1):
@@ -2096,6 +2111,7 @@ def main():
             est.record(lang.key, bench, size, eff_reps, wall)
             if err:
                 failures.append(err)
+                errors += 1
                 continue
             if secs is None:
                 continue
@@ -2146,6 +2162,7 @@ def main():
                                "this row is EXCLUDED" % (commas(value), commas(want)),
                                CORAL, bold=True))
             agreed = False
+            invalid += 1
         if agreed:
             print("    " + hue(u"\u2714", LIME)
                   + DIM(" checksum %s -- all %d languages agree%s"
@@ -2164,6 +2181,7 @@ def main():
             print("    " + hue(u"\u2718 CHECKSUMS DISAGREE %r -- this comparison is "
                                "INVALID and the row is excluded from every summary"
                                % checksums, CORAL, bold=True))
+            invalid += 1
 
     total_wall = time.perf_counter() - total_wall
 
@@ -2356,6 +2374,14 @@ def main():
           + star + "  " + hue(sub, STEEL) + "  " + star)
     print()
     est.save()
+    if invalid:
+        print("  " + hue("%d benchmark(s) had disagreeing or non-golden checksums; "
+                         "exit 1." % invalid, CORAL, bold=True))
+        return 1
+    if args.strict and errors:
+        print("  " + hue("--strict: %d language run(s) failed; exit 1." % errors,
+                         CORAL, bold=True))
+        return 1
     return 0
 
 
