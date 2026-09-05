@@ -1214,6 +1214,15 @@ def prng_selftest(active):
     return 0
 
 
+def _git_commit():
+    try:
+        return subprocess.run(["git", "-C", HERE, "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True,
+                              timeout=5).stdout.strip() or None
+    except Exception:
+        return None
+
+
 def _cpu_info():
     """CPU model and frequency governor, when the OS will say: numbers from a
     laptop on the powersave governor are a different machine's numbers."""
@@ -1897,6 +1906,9 @@ def main():
     ap.add_argument("--shuffle", action="store_true",
                     help="run the languages in a fresh random order for every "
                          "benchmark, so nobody always runs coldest or hottest")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="seed for --shuffle (recorded in results.json, so a "
+                         "shuffled run can be reproduced)")
     ap.add_argument("--selftest", action="store_true",
                     help="run only the hidden PRNG conformance benchmark in "
                          "every language and verify each one bit-for-bit "
@@ -2077,6 +2089,11 @@ def main():
     sizes, checkvals = {}, {}      # per bench key, for the report
     rss_all = {}   # bench key -> {lang key: peak MB}
     invalid, errors = 0, 0
+    # --shuffle used to draw from an unseeded random, so a shuffled run could
+    # never be reproduced; results.json now records the seed and the order.
+    seed = args.seed if args.seed is not None else int(time.time()) & 0xFFFFFFFF
+    shuffler = random.Random(seed)
+    order_used = {}          # bench key -> [lang keys in the order they ran]
     total_wall = time.perf_counter()
 
     for idx, bench in enumerate(benches, 1):
@@ -2108,7 +2125,8 @@ def main():
         row, checksums, rss_row, failures, notes = {}, {}, {}, [], []
         run_order = list(active)
         if args.shuffle:
-            random.shuffle(run_order)
+            shuffler.shuffle(run_order)
+        order_used[bench["key"]] = [l.key for l in run_order]
         for lang in run_order:
             if bench["key"] in lang.sits_out:
                 notes.append("%s %s" % (lang.name.ljust(NAMEW),
@@ -2349,7 +2367,11 @@ def main():
         try:
             report = write_report(active, benches, results, startup,
                                   {"scale": scale, "reps": reps, "sizes": sizes,
-                                   "checksums": checkvals, "rss_mb": rss_all},
+                                   "checksums": checkvals, "rss_mb": rss_all,
+                                   "argv": sys.argv[1:], "seed": seed,
+                                   "order": order_used, "commit": _git_commit(),
+                                   "pinned": PIN[-1] if PIN else None,
+                                   "serial_gc": args.serial_gc},
                                   total_wall)
         except Exception as e:
             print()
