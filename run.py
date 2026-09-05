@@ -31,6 +31,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -1074,19 +1075,25 @@ def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
     argv = PIN + lang.cmd + [bench_key, str(size), str(reps)]
     if warmup and lang.warmup:
         argv.append(str(warmup))
+    # Temp files, not pipes: only stdout is guaranteed to be one line. A child
+    # that writes more than the pipe buffer (~64 KB) to stderr -- PHP
+    # deprecation spam, a JVM hs_err dump -- would fill a pipe and block
+    # forever, and the runner would report a timeout instead of the real error.
+    # A file has no such limit, so the wait loop needs no reader thread.
+    outf = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
+    errf = tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace")
     t0 = time.perf_counter()
     try:
-        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
+        proc = subprocess.Popen(argv, stdout=outf, stderr=errf)
     except Exception as e:
+        outf.close()
+        errf.close()
         return None, None, None, None, "%s failed to launch: %s" % (lang.name, e)
 
     rss_mb = None
     if hasattr(os, "wait4"):
         # Poll with WNOHANG rather than block: the child self-times its hot
         # region, so the few ms of polling latency never touch the benchmark.
-        # The children print a single line, far below the pipe buffer, so
-        # reading after exit cannot deadlock.
         deadline = t0 + timeout
         while True:
             pid, status, ru = os.wait4(proc.pid, os.WNOHANG)
@@ -1100,22 +1107,28 @@ def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
                 proc.kill()
                 os.wait4(proc.pid, 0)
                 proc.returncode = -9
+                outf.close()
+                errf.close()
                 return None, None, None, None, "%s timed out after %s" % (
                     lang.name, human_time(timeout))
             time.sleep(0.02)
-        out = proc.stdout.read()
-        errout = proc.stderr.read()
-        proc.stdout.close()
-        proc.stderr.close()
     else:                        # non-POSIX fallback: no rusage available
         try:
-            out, errout = proc.communicate(timeout=timeout)
+            proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
-            proc.communicate()
+            proc.wait()
+            outf.close()
+            errf.close()
             return None, None, None, None, "%s timed out after %s" % (
                 lang.name, human_time(timeout))
     wall = time.perf_counter() - t0
+    outf.seek(0)
+    out = outf.read()
+    outf.close()
+    errf.seek(0)
+    errout = errf.read()
+    errf.close()
 
     if proc.returncode != 0:
         # PHP (among others) prints fatal errors to stdout, so look there too
