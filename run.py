@@ -736,15 +736,16 @@ def build_all(skip):
         src = os.path.join(HERE, "bench.cob")
         if not fresh(exe, src):
             # -fno-trunc: C-style binary wraparound instead of decimal truncation
+            #   (spelled -fnotrunc before GnuCOBOL 3.2)
             # -fstatic-call: CALL "malloc"/"free"/"clock_gettime" link straight to libc
-            proc = subprocess.run([cobc, "-x", "-O3", "-fno-trunc", "-fstatic-call",
-                                   "-o", exe, src],
-                                  capture_output=True, text=True)
-            if proc.returncode != 0:
-                # -O3 arrived with GnuCOBOL 3; older cobc still knows -O2
-                proc = subprocess.run([cobc, "-x", "-O2", "-fno-trunc", "-fstatic-call",
+            # -O3 arrived with GnuCOBOL 3; older cobc still knows -O2
+            for opt, trunc in (("-O3", "-fno-trunc"), ("-O3", "-fnotrunc"),
+                               ("-O2", "-fnotrunc")):
+                proc = subprocess.run([cobc, "-x", opt, trunc, "-fstatic-call",
                                        "-o", exe, src],
                                       capture_output=True, text=True)
+                if proc.returncode == 0:
+                    break
             if proc.returncode != 0:
                 msg = (proc.stderr or "").strip().splitlines()
                 lang.reason = "compile failed: " + (msg[-1][:60] if msg else "no output")

@@ -36,15 +36,17 @@ func benchMandelbrot(n int) int64 {
 			zr, zi := 0.0, 0.0
 			i := 0
 			for i < 255 {
-				zr2, zi2 := zr*zr, zi*zi
+				// the spec lets the compiler fuse multiply-adds (FMA), even
+				// across statements; the explicit float64() conversions round
+				// every product before anything consumes it, so every language
+				// sees the same doubles (arm64 would otherwise fuse zi*zi into
+				// the subtract below)
+				zr2, zi2 := float64(zr*zr), float64(zi*zi)
 				if zr2+zi2 > 4.0 {
 					break
 				}
-				// the spec lets the compiler fuse these multiply-adds (FMA); the
-				// explicit float64() conversions force the intermediate rounding
-				// so every language sees the same doubles
 				zi = float64(2.0*zr*zi) + ci
-				zr = float64(zr2-zi2) + cr
+				zr = zr2 - zi2 + cr
 				i++
 			}
 			total += int64(i)
