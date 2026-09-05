@@ -560,6 +560,9 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
 --heavy            6x the standard workload (needs ~6 GB free if Lua is in)
 --scale N          arbitrary multiplier (--scale 50 for something brutal)
 --reps N           runs per language, fastest wins (default 3)
+--min-time T       grow --reps per language until the timed compute should
+                   last at least T seconds (cap 50): fast languages repeat
+                   more instead of reporting sub-millisecond timings
 --warmup N         N untimed in-process runs before the timed ones, honoured
                    by the JIT runtimes (Java, C#, JavaScript, PHP, Ruby) --
                    the JMH treatment for cold-start complaints

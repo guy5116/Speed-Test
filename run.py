@@ -1956,6 +1956,12 @@ def main():
     ap.add_argument("--quick", action="store_true", help="tiny workload, for a fast demo")
     ap.add_argument("--heavy", action="store_true", help="the 'massive task' scale")
     ap.add_argument("--reps", type=int, default=None, help="runs per language, best wins")
+    ap.add_argument("--min-time", type=float, default=None, metavar="T",
+                    help="grow --reps per language until the timed compute "
+                         "should last at least T seconds (capped at 50 reps): "
+                         "fast languages repeat more instead of reporting "
+                         "sub-millisecond timings -- the pyperf / testing.B "
+                         "behaviour")
     ap.add_argument("--warmup", type=int, default=0, metavar="N",
                     help="N untimed in-process runs before the timed ones, for "
                          "the JIT runtimes that honour it (Java, C#, JavaScript, "
@@ -2141,6 +2147,9 @@ def main():
     if reps > 1:
         print("    " + DIM("           (repeats happen inside one process, so the JIT "
                            "gets to warm up)"))
+    if args.min_time:
+        print("    " + DIM("           (--min-time %g: reps grow per language until "
+                           "the estimate reaches it, cap 50)" % args.min_time))
     if warmup:
         print("    " + DIM("           (+%d untimed warm-up run%s first for the JIT "
                            "runtimes: Java, C#, JavaScript, PHP, Ruby)"
@@ -2188,7 +2197,7 @@ def main():
         print()
 
         row, checksums, rss_row, failures, notes = {}, {}, {}, [], []
-        med_row, spread_row = {}, {}
+        med_row, spread_row, reps_row = {}, {}, {}
         run_order = list(active)
         if args.shuffle:
             shuffler.shuffle(run_order)
@@ -2199,13 +2208,22 @@ def main():
                                         lang.sits_out[bench["key"]]))
                 continue
             label = hue(lang.name.ljust(NAMEW), lang.tint, bold=True)
+            lang_reps = reps
+            if args.min_time:
+                # Reps run inside the child, so the runner cannot adapt
+                # mid-process -- but it can size them up front: one rep's
+                # predicted cost is the difference between a 2-rep and a
+                # 1-rep estimate (rate times units, bias and all).
+                per_rep = max(est.estimate(lang.key, bench, size, 2)
+                              - est.estimate(lang.key, bench, size, 1), 1e-9)
+                lang_reps = min(max(reps, math.ceil(args.min_time / per_rep)), 50)
             # warm-up runs cost wall-clock like any other rep, so the meter
             # and the timing cache both count them as reps
-            eff_reps = reps + (warmup if lang.warmup else 0)
+            eff_reps = lang_reps + (warmup if lang.warmup else 0)
             guess = est.estimate(lang.key, bench, size, eff_reps)
             with Meter(label, guess, tint=lang.tint) as meter:
                 secs, checksum, wall, rss, err, median, worst = run_one(
-                    lang, bench["key"], size, reps, warmup,
+                    lang, bench["key"], size, lang_reps, warmup,
                     timeout=max(600.0, 20.0 * guess))
                 meter.ok = err is None
             est.record(lang.key, bench, size, eff_reps, wall)
@@ -2224,6 +2242,7 @@ def main():
                 # the noise best-of-N would otherwise silently hide
                 med_row[lang.key] = median
                 spread_row[lang.key] = (worst - secs) / secs
+                reps_row[lang.key] = lang_reps
         for msg in notes:
             print("    " + DIM(u"\u25cb ") + hue(msg, GOLD))
         for err in failures:
@@ -2255,7 +2274,7 @@ def main():
                 prefix = "    %s %s " % (badge, hue(lang.name.ljust(NAMEW), lang.tint, bold=True))
                 spread = spread_row.get(lang.key)
                 tail = ""
-                if spread is not None and reps > 1:
+                if spread is not None and reps_row.get(lang.key, 1) > 1:
                     tail = DIM(" \u00b1%d%%" % round(spread * 100))
                     if spread > 0.15:
                         tail += " " + hue(u"\u26a0 noisy", GOLD, bold=True)

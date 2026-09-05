@@ -93,6 +93,15 @@ class TestRealRuns(unittest.TestCase):
         self.assertEqual(code, 1, out)
         self.assertIn("required language(s) missing: cobol", out)
 
+    def test_min_time_grows_reps_and_still_validates(self):
+        # C at --quick sieve costs ~ms per rep, so --min-time forces many
+        # reps; the checksum must be identical across all of them and the
+        # row must still validate against the golden
+        code, out = cli("--quick", "--only", "sieve", "--skip", SKIP,
+                        "--min-time", "0.3")
+        self.assertEqual(code, 0, out)
+        self.assertIn("matches golden", out)
+
     def test_selftest_passes(self):
         code, out = cli("--selftest", "--skip", SKIP)
         self.assertEqual(code, 0, out)
