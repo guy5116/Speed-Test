@@ -47,7 +47,9 @@ TRUECOLOR = USE_COLOR and os.environ.get("SPEEDTEST_NO_TRUECOLOR") is None and (
     or "256color" in os.environ.get("TERM", "")
     or "TERM_PROGRAM" in os.environ
     or "WT_SESSION" in os.environ)
-ANIMATE = USE_COLOR     # turned off by --plain / --no-animation
+# turned off by --plain / --no-animation; the bar thread needs a spare core,
+# so on a 1- or 2-core box it must not compete with the timed child
+ANIMATE = USE_COLOR and (os.cpu_count() or 1) > 2
 
 
 def c(text, code):
@@ -1165,8 +1167,11 @@ def measure_startup(lang, trials=5):
         # sieve, not mandelbrot: at n=8 both are negligible everywhere except
         # COBOL, whose decimal float engine turns even an 8x8 mandelbrot into
         # real work that would pollute its startup number
-        proc = subprocess.run(PIN + lang.cmd + ["sieve", "8", "1"],
-                              capture_output=True, text=True, timeout=60)
+        try:
+            proc = subprocess.run(PIN + lang.cmd + ["sieve", "8", "1"],
+                                  capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            return None      # a wedged interpreter skips the row, not the run
         wall = time.perf_counter() - t0
         if proc.returncode != 0:
             return None
@@ -2328,7 +2333,7 @@ def main():
 
     # ---- startup cost, which matters more than people think ----
     startup = {}
-    for i, lang in enumerate(active):
+    for i, lang in enumerate(active if results else []):
         # The one bar that needs no estimate at all: progress here is exactly
         # "languages done", and it is drawn between measurements, never during one.
         if ANIMATE:
@@ -2391,33 +2396,39 @@ def main():
 
     print()
     print("  " + neon_rule())
-    print("  " + hue("Total time: %s." % human_time(total_wall), AQUA)
-          + DIM("  Read the README for what these numbers do"))
-    print("  " + DIM("and do not mean -- especially before quoting them at anyone."))
-    print()
+    if not results:
+        # every benchmark was skipped or failed: no summary, no ceremony
+        print("  " + hue("Nothing ran.", GOLD, bold=True)
+              + DIM("  Every benchmark was skipped or produced no valid row."))
+        print()
+    else:
+        print("  " + hue("Total time: %s." % human_time(total_wall), AQUA)
+              + DIM("  Read the README for what these numbers do"))
+        print("  " + DIM("and do not mean -- especially before quoting them at anyone."))
+        print()
 
-    # ---- credits ----
-    rows = banner("MADE BY GUY5116")
-    sub = smallcaps("with agentic ai")
-    star = hue(u"✦", GOLD, bold=True)
-    wide = max(len(r) for r in rows)
-    left = " " * (2 + max((W - wide) // 2, 0))
-    if ANIMATE and TRUECOLOR:
-        # one slow ripple of the gradient across the letters, then hold
-        sys.stdout.write("\n" * len(rows))
-        for frame in range(28):
+        # ---- credits ----
+        rows = banner("MADE BY GUY5116")
+        sub = smallcaps("with agentic ai")
+        star = hue(u"✦", GOLD, bold=True)
+        wide = max(len(r) for r in rows)
+        left = " " * (2 + max((W - wide) // 2, 0))
+        if ANIMATE and TRUECOLOR:
+            # one slow ripple of the gradient across the letters, then hold
+            sys.stdout.write("\n" * len(rows))
+            for frame in range(28):
+                sys.stdout.write("\033[%dF" % len(rows))
+                for i, row in enumerate(rows):
+                    sys.stdout.write(left + shimmer(row, frame * 0.4 - i * 0.3) + "\n")
+                sys.stdout.flush()
+                time.sleep(0.05)
             sys.stdout.write("\033[%dF" % len(rows))
-            for i, row in enumerate(rows):
-                sys.stdout.write(left + shimmer(row, frame * 0.4 - i * 0.3) + "\n")
-            sys.stdout.flush()
-            time.sleep(0.05)
-        sys.stdout.write("\033[%dF" % len(rows))
-    for row in rows:
-        print(left + gradient(row, PINK, AQUA, bold=True))
-    print()
-    print(" " * (2 + max((W - len(sub) - 6) // 2, 0))
-          + star + "  " + hue(sub, STEEL) + "  " + star)
-    print()
+        for row in rows:
+            print(left + gradient(row, PINK, AQUA, bold=True))
+        print()
+        print(" " * (2 + max((W - len(sub) - 6) // 2, 0))
+              + star + "  " + hue(sub, STEEL) + "  " + star)
+        print()
     est.save()
     if invalid:
         print("  " + hue("%d benchmark(s) had disagreeing or non-golden checksums; "
