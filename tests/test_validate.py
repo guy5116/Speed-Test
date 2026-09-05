@@ -4,6 +4,7 @@ without running a single benchmark.
 
 Run with:  python3 -m unittest discover tests
 """
+import json
 import os
 import sys
 import unittest
@@ -105,6 +106,21 @@ class TestParseOutput(unittest.TestCase):
     def test_empty_output_is_an_error(self):
         secs, checksum, err = run.parse_output("")
         self.assertIsNotNone(err)
+
+
+class TestGoldenStockTies(unittest.TestCase):
+    STOCK = (0.08, 1.0, 6.0)          # --quick, standard, --heavy
+
+    def test_golden_and_stock_scales_cover_each_other(self):
+        # both directions: every recorded size is a stock size, and every
+        # stock (benchmark, scale) pair has a recorded golden -- this ties
+        # golden.json and the BENCHMARKS table together
+        with open(os.path.join(os.path.dirname(HERE), "golden.json")) as fh:
+            golden = json.load(fh)
+        for b in run.BENCHMARKS:
+            stock_sizes = set(str(run.sized(b, s)) for s in self.STOCK)
+            self.assertEqual(set(golden.get(b["key"], {})), stock_sizes,
+                             b["key"])
 
 
 if __name__ == "__main__":
