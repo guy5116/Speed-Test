@@ -2,18 +2,26 @@ name: ci
 on:
   push: { branches: [main] }
   pull_request:
+  schedule:
+    - cron: "17 6 * * 1"      # weekly: catches toolchain drift (setup-go 'stable' moves)
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  suite:
+  linux:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
       # apt covers the small toolchains; the setup actions cover the big
       # runtimes; Rust is preinstalled on the runner image. Swift is skipped
-      # -- run.py notes any missing toolchain and carries on, so the job
-      # still validates everything that is present.
+      # here and covered by the macOS job.
       - name: apt toolchains
         run: |
           sudo apt-get update
@@ -28,10 +36,12 @@ jobs:
         with: { node-version: 22 }
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: numpy
-        run: pip install numpy
+      - run: pip install numpy pyflakes
 
-      - name: runner unit tests
+      - name: lint
+        run: python3 -m pyflakes run.py bench.py bench_numpy.py tests tools
+
+      - name: unit tests
         run: python3 -m unittest discover -v tests
 
       # every language must reproduce the shared PRNG bit-for-bit -- this is
@@ -39,22 +49,71 @@ jobs:
       - name: PRNG conformance
         run: python3 run.py --selftest --plain
 
-      # a quick full run; checksums are verified against golden.json
-      - name: quick suite
-        run: python3 run.py --quick --plain --warmup 1
+      # --require lists exactly what this job installed, so a broken
+      # toolchain step turns red instead of silently shrinking the suite;
+      # --strict fails on any per-language error, and checksum failures
+      # fail regardless
+      - name: quick suite (strict)
+        run: >
+          python3 run.py --quick --plain --warmup 1 --strict
+          --require asm,c,cpp,rust,go,java,csharp,js,lua,perl,php,python,numpy,ruby,cobol
 
-      # FMA drift canary: mandelbrot at the --heavy size is where fused
-      # multiply-adds change the checksum if a compiler starts contracting
+      - name: goldens reproduce
+        run: python3 tools/golden.py --check --quick-only
+
+      # FMA drift canary: every compiler that could fuse a*b+c, at the size
+      # where fusion changes the answer. Go is the one most likely to regress
+      # (its fix is source-level float64() conversions).
       - name: heavy mandelbrot vs golden
         run: |
           python3 - <<'EOF'
-          import json, subprocess
+          import json, os, subprocess
           want = json.load(open("golden.json"))["mandelbrot"]["1959"]
-          for cmd in (["./build/bench_c"], ["./build/bench_cpp"],
-                      ["node", "bench.js"]):
+          cmds = [["./build/bench_c"], ["./build/bench_cpp"], ["./build/bench_rust"],
+                  ["./build/bench_go"], ["./build/bench_asm"],
+                  ["java", "-cp", "build", "Bench"],
+                  ["dotnet", "build/csharp/out/bench_cs.dll"],
+                  ["node", "bench.js"]]
+          for cmd in cmds:
+              if cmd[0].startswith("./") and not os.path.exists(cmd[0]):
+                  print("skip", cmd[0]); continue
               out = subprocess.run(cmd + ["mandelbrot", "1959", "1"],
                                    capture_output=True, text=True, check=True)
               got = int(out.stdout.split()[2])
               assert got == want, (cmd, got, want)
               print(" ".join(cmd), "ok", got)
           EOF
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-linux
+          path: |
+            build/results.json
+            build/report.html
+
+  macos:
+    # Apple silicon: clang's default -ffp-contract=on, the -march=native
+    # fallback path, the darwin ru_maxrss branch, the asm auto-skip -- and
+    # Swift for free, since Xcode ships swiftc.
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install lua go
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install numpy
+      - run: python3 -m unittest discover -v tests
+      - run: python3 run.py --selftest --plain
+      - run: >
+          python3 run.py --quick --plain --strict
+          --require c,cpp,swift,go,js,lua,perl,python,numpy,ruby
+      - name: heavy mandelbrot vs golden (clang + swift)
+        run: |
+          for b in build/bench_c build/bench_cpp build/bench_swift build/bench_go; do
+            got=$($b mandelbrot 1959 1 | cut -d' ' -f3)
+            test "$got" = "$(python3 -c 'import json;print(json.load(open("golden.json"))["mandelbrot"]["1959"])')" || { echo "$b: $got"; exit 1; }
+          done

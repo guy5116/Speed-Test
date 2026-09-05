@@ -1,5 +1,7 @@
 # How much does your language cost you?
 
+![ci](https://github.com/guy5116/Speed-Test/actions/workflows/ci.yml/badge.svg)
+
 Fifteen languages — **x86-64 assembly, C, C++, Rust, Swift, Go, Java, C#,
 JavaScript, Lua, Perl, PHP, Python, Ruby, COBOL** — plus a **NumPy** row for
 Python, running the *same six algorithms* on the *same input*, timed side by
@@ -195,6 +197,13 @@ hoping quicksort trips over a wrong one.
 checksums for every benchmark at the `--quick`, standard and `--heavy` sizes.
 Within-run agreement cannot catch a bug that every implementation shares;
 the goldens can, and they let a single-language run validate itself.
+`tools/golden.py --check` re-derives every value from at least two
+independent implementations; `--write` is the only way the file changes.
+
+**A failing comparison fails the run.** A checksum disagreement or a golden
+mismatch does not just exclude the row -- the run exits non-zero, so a CI
+job cannot stay green while the suite proves nothing. `--strict` extends
+this to any language that fails, times out, or is missing from `--require`.
 
 **Best-of-N, inside one process.** Each program runs its benchmark N times
 (default 3) and reports the fastest. The repeats happen *in-process*, which
@@ -452,7 +461,13 @@ bench.rb      Ruby         ruby --yjit
 bench.cob     COBOL        cobc -x -O3 -fno-trunc -fstatic-call (GnuCOBOL 3+)
 run.py        builds, runs, compares, prints
 golden.json   cross-verified checksums for the stock sizes (see honesty rails)
-tests/        unit tests for run.py's logic: python3 -m unittest discover tests
+tests/        unit tests plus the cross-language oracle at tiny sizes:
+              python3 -m unittest discover tests
+tools/golden.py           regenerates or verifies golden.json from at least
+                          two independent implementations
+.github/workflows/ci.yml  lint, unit tests, PRNG selftest, a strict --quick
+                          suite, golden verification and an FMA-drift canary,
+                          on Linux and macOS
 ```
 
 Summary tables and the leaderboard use the **geometric mean** of the
@@ -551,6 +566,13 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
                    .NET workstation GC, GOMAXPROCS=1, V8 single-threaded GC)
 --shuffle          fresh random language order per benchmark, so nobody
                    always runs coldest or hottest
+--seed N           seed for --shuffle, recorded in results.json so a
+                   shuffled run can be reproduced exactly
+--strict           exit non-zero if any language fails, times out, or is
+                   missing from --require -- for CI; checksum failures
+                   always exit non-zero, flag or no flag
+--require a,b      language keys that must be available; with --strict a
+                   missing one fails the run instead of shrinking it
 --selftest         verify every language's PRNG bit-for-bit and exit
 --only a,b         just these benchmarks
 --skip-bench a,b   exclude benchmarks, keep everything else

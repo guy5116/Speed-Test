@@ -6,7 +6,6 @@ Run with:  python3 -m unittest discover tests
 No toolchains needed; nothing here compiles or benchmarks anything.
 """
 import json
-import math
 import os
 import sys
 import unittest
