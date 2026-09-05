@@ -861,6 +861,17 @@ def sized(bench, scale):
     return max(n, 8)
 
 
+# Several entries parse the size into a 32-bit int (C's atoi, Java/C#/Rust);
+# past INT32_MAX they overflow or throw, they don't slow down.
+INT32_MAX = 2147483647
+
+
+def int32_cap(bench):
+    """Largest --scale whose size still fits a 32-bit int for this benchmark."""
+    r = INT32_MAX / float(bench["base"])
+    return r * r if bench["growth"] == "quadratic" else r ** 3 if bench["growth"] == "cubic" else r
+
+
 # ------------------------------------------------- how long is this going to take
 
 TIMING_CACHE = os.path.join(BUILD, "timings.json")
@@ -1975,6 +1986,18 @@ def main():
                   % (args.only or "(all)", args.skip_bench or "(none)"), CORAL, bold=True))
         return 1
 
+    # The 32-bit guard runs here, where `benches` is built, not inside the
+    # benchmark loop: the header and the "about N minutes ahead" estimate must
+    # not promise work the loop would then refuse to run. Skipping is not a
+    # failure -- whatever survives the cap still runs and still validates.
+    too_big = [b for b in benches if sized(b, scale) > INT32_MAX]
+    for b in too_big:
+        print("  " + hue("%s skipped: size %s overflows the 32-bit languages "
+                         "(largest usable --scale is about %d)"
+                         % (b["title"], commas(sized(b, scale)), int(int32_cap(b))),
+                         CORAL, bold=True))
+    benches = [b for b in benches if b not in too_big]
+
     # ---- header ----
     print()
     if USE_COLOR:
@@ -2098,22 +2121,6 @@ def main():
 
     for idx, bench in enumerate(benches, 1):
         size = sized(bench, scale)
-        if size > 2147483647:
-            # several entries parse the size into a 32-bit int (C's atoi,
-            # Java/C#/Rust); past INT32_MAX they overflow or throw, they
-            # don't slow down -- refuse loudly instead of dying weirdly
-            if bench["growth"] == "quadratic":
-                cap = (2147483647.0 / bench["base"]) ** 2
-            elif bench["growth"] == "cubic":
-                cap = (2147483647.0 / bench["base"]) ** 3
-            else:
-                cap = 2147483647.0 / bench["base"]
-            print()
-            print("  " + hue("%s skipped: size %s overflows the 32-bit languages "
-                             "(the largest usable --scale here is about %d)"
-                             % (bench["title"], commas(size), int(cap)),
-                             CORAL, bold=True))
-            continue
         print()
         for line in banner_box("%d/%d   %s" % (idx, len(benches), bench["title"])):
             print("  " + line)
