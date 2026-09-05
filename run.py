@@ -26,6 +26,7 @@ import json
 import math
 import os
 import platform
+import random
 import re
 import shutil
 import subprocess
@@ -217,6 +218,14 @@ def human_time(seconds):
     return "%d %s %d hr" % (d, "day" if d == 1 else "days", h)
 
 
+def gmean(ratios):
+    """Geometric mean -- the correct average for ratios (Fleming & Wallace,
+    CACM 1986). An arithmetic mean of slowdowns overweights the worst
+    benchmark and changes with the choice of baseline; the geometric mean
+    does neither."""
+    return math.exp(sum(math.log(r) for r in ratios) / len(ratios))
+
+
 def commas(n):
     return "{:,}".format(int(n))
 
@@ -331,12 +340,16 @@ def build_all(skip):
         if fresh(exe, src):
             lang.note = saved_notes.get("c", "compiled -O3")
         else:
-            flags = ["-O3", "-march=native"]
+            # -ffp-contract=off: GCC contracts a*b+c into fused multiply-adds
+            # by default, which changes float rounding -- at --heavy scale
+            # that flips mandelbrot pixels and fails the cross-language
+            # checksum. Everyone must compute the same doubles.
+            flags = ["-O3", "-march=native", "-ffp-contract=off"]
             proc = subprocess.run([cc] + flags + ["-o", exe, src],
                                   capture_output=True, text=True)
             if proc.returncode != 0:
                 # -march=native isn't universal (Apple silicon clang, some cross setups)
-                flags = ["-O3"]
+                flags = ["-O3", "-ffp-contract=off"]
                 proc = subprocess.run([cc] + flags + ["-o", exe, src],
                                       capture_output=True, text=True)
             if proc.returncode != 0:
@@ -359,11 +372,13 @@ def build_all(skip):
         if fresh(exe, src):
             lang.note = saved_notes.get("cpp", "compiled -O3 -std=c++17")
         else:
-            flags = ["-O3", "-march=native", "-std=c++17"]
+            # -ffp-contract=off for the same reason as the C build: FMA
+            # contraction changes mandelbrot's rounding at large sizes
+            flags = ["-O3", "-march=native", "-ffp-contract=off", "-std=c++17"]
             proc = subprocess.run([cxx] + flags + ["-o", exe, src],
                                   capture_output=True, text=True)
             if proc.returncode != 0:
-                flags = ["-O3", "-std=c++17"]
+                flags = ["-O3", "-ffp-contract=off", "-std=c++17"]
                 proc = subprocess.run([cxx] + flags + ["-o", exe, src],
                                       capture_output=True, text=True)
             if proc.returncode != 0:
@@ -882,7 +897,7 @@ REF_RATIO = {
     "php":    {"mandelbrot": 9.0,  "sieve": 6.0,  "quicksort": 8.0,  "wordcount": 8.0,
                "binarytrees": 8.0,  "matmul": 20.0},
     "python": {"mandelbrot": 50.5, "sieve": 16.5, "quicksort": 29.3, "wordcount": 28.1,
-               "binarytrees": 9.5,  "matmul": 125.0},
+               "binarytrees": 19.0, "matmul": 125.0},
     "numpy":  {"mandelbrot": 4.0,  "sieve": 1.5,  "matmul": 0.7},
     "ruby":   {"mandelbrot": 16.0, "sieve": 7.0,  "quicksort": 20.0, "wordcount": 25.0,
                "binarytrees": 9.0,  "matmul": 55.0},
@@ -1048,31 +1063,71 @@ class Estimator:
 PIN = []
 
 
-def run_one(lang, bench_key, size, reps, warmup=0):
-    """Returns (compute_seconds, checksum, wall_seconds, error). The error is
-    returned rather than printed, so the caller can stop the spinner first."""
+def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
+    """Returns (compute_seconds, checksum, wall_seconds, peak_rss_mb, error).
+    The error is returned rather than printed, so the caller can stop the
+    spinner first. The child is reaped with os.wait4 so its rusage comes back
+    with it -- that is where the peak-RSS figure comes from -- and a deadline
+    keeps one hung toolchain from hanging the whole run."""
     argv = PIN + lang.cmd + [bench_key, str(size), str(reps)]
     if warmup and lang.warmup:
         argv.append(str(warmup))
     t0 = time.perf_counter()
     try:
-        proc = subprocess.run(argv, capture_output=True, text=True)
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True)
     except Exception as e:
-        return None, None, None, "%s failed to launch: %s" % (lang.name, e)
+        return None, None, None, None, "%s failed to launch: %s" % (lang.name, e)
+
+    rss_mb = None
+    if hasattr(os, "wait4"):
+        # Poll with WNOHANG rather than block: the child self-times its hot
+        # region, so the few ms of polling latency never touch the benchmark.
+        # The children print a single line, far below the pipe buffer, so
+        # reading after exit cannot deadlock.
+        deadline = t0 + timeout
+        while True:
+            pid, status, ru = os.wait4(proc.pid, os.WNOHANG)
+            if pid == proc.pid:
+                proc.returncode = os.waitstatus_to_exitcode(status)
+                # ru_maxrss is KB on Linux, bytes on macOS
+                scale_div = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+                rss_mb = ru.ru_maxrss / scale_div
+                break
+            if time.perf_counter() > deadline:
+                proc.kill()
+                os.wait4(proc.pid, 0)
+                proc.returncode = -9
+                return None, None, None, None, "%s timed out after %s" % (
+                    lang.name, human_time(timeout))
+            time.sleep(0.02)
+        out = proc.stdout.read()
+        errout = proc.stderr.read()
+        proc.stdout.close()
+        proc.stderr.close()
+    else:                        # non-POSIX fallback: no rusage available
+        try:
+            out, errout = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            return None, None, None, None, "%s timed out after %s" % (
+                lang.name, human_time(timeout))
     wall = time.perf_counter() - t0
+
     if proc.returncode != 0:
         # PHP (among others) prints fatal errors to stdout, so look there too
         # before declaring "no output".
-        msg = ((proc.stderr or "").strip() or (proc.stdout or "").strip()).splitlines()
-        return None, None, None, "%s exited %d: %s" % (
+        msg = ((errout or "").strip() or (out or "").strip()).splitlines()
+        return None, None, None, None, "%s exited %d: %s" % (
             lang.name, proc.returncode, msg[-1] if msg else "no output")
-    parts = proc.stdout.split()
+    parts = out.split()
     if len(parts) != 4 or parts[0] != "OK":
-        return None, None, None, "%s printed something unexpected: %r" % (
-            lang.name, proc.stdout[:80])
+        return None, None, None, None, "%s printed something unexpected: %r" % (
+            lang.name, out[:80])
     # Clamped away from zero: a compiled language at a tiny --scale can report
     # 0.000 ms, and a literal zero would poison every ratio downstream.
-    return max(float(parts[3]) / 1000.0, 1e-9), int(parts[2]), wall, None
+    return max(float(parts[3]) / 1000.0, 1e-9), int(parts[2]), wall, rss_mb, None
 
 
 def measure_startup(lang, trials=5):
@@ -1081,8 +1136,11 @@ def measure_startup(lang, trials=5):
     best = None
     for _ in range(trials):
         t0 = time.perf_counter()
-        proc = subprocess.run(PIN + lang.cmd + ["mandelbrot", "8", "1"],
-                              capture_output=True, text=True)
+        # sieve, not mandelbrot: at n=8 both are negligible everywhere except
+        # COBOL, whose decimal float engine turns even an 8x8 mandelbrot into
+        # real work that would pollute its startup number
+        proc = subprocess.run(PIN + lang.cmd + ["sieve", "8", "1"],
+                              capture_output=True, text=True, timeout=60)
         wall = time.perf_counter() - t0
         if proc.returncode != 0:
             return None
@@ -1094,6 +1152,71 @@ def measure_startup(lang, trials=5):
         if best is None or wall < best:
             best = wall
     return best
+
+
+def prng_selftest(active):
+    """Run the hidden `prng` benchmark -- a checksum over the raw generator
+    stream -- in every language, against a reference computed right here in
+    arbitrary-precision Python, which has no 64-bit tricks to get wrong.
+    Several languages build the 64-bit multiply from 32-bit halves (JS, PHP,
+    Ruby, COBOL); quicksort would eventually catch a wrong bit, but this says
+    which language and on which output."""
+    count = 1_000_000
+    state, h = 12345, 0
+    mask64 = (1 << 64) - 1
+    for _ in range(count):
+        state = (state * 6364136223846793005 + 1442695040888963407) & mask64
+        h = (h * 31 + (state >> 33)) & 0xFFFFFFFF
+    print()
+    print("  " + hue(u"▸ PRNG CONFORMANCE", AQUA, bold=True)
+          + DIM("  first %s outputs, reference checksum %s"
+                % (commas(count), commas(h))))
+    bad = 0
+    for lang in active:
+        secs, checksum, _, _, err = run_one(lang, "prng", count, 1)
+        if err:
+            print("    %s %s  %s" % (hue(u"✘", CORAL, bold=True),
+                                     hue(lang.name.ljust(NAMEW), lang.tint, bold=True),
+                                     hue(err, GOLD)))
+            bad += 1
+        elif checksum == h:
+            print("    %s %s  %s" % (hue(u"✔", LIME, bold=True),
+                                     hue(lang.name.ljust(NAMEW), lang.tint, bold=True),
+                                     DIM("%s in %s" % (commas(checksum), fmt_secs(secs)))))
+        else:
+            print("    %s %s  %s" % (hue(u"✘", CORAL, bold=True),
+                                     hue(lang.name.ljust(NAMEW), lang.tint, bold=True),
+                                     hue("returned %s, expected %s"
+                                         % (commas(checksum), commas(h)), CORAL, bold=True)))
+            bad += 1
+    print()
+    if bad:
+        print("  " + hue("%d language(s) failed the PRNG conformance check." % bad,
+                         CORAL, bold=True))
+        return 1
+    print("  " + hue("Every language reproduces the shared PRNG bit-for-bit.",
+                     LIME, bold=True))
+    return 0
+
+
+def _cpu_info():
+    """CPU model and frequency governor, when the OS will say: numbers from a
+    laptop on the powersave governor are a different machine's numbers."""
+    info = {}
+    try:
+        with open("/proc/cpuinfo") as fh:
+            for line in fh:
+                if line.lower().startswith("model name"):
+                    info["cpu"] = line.split(":", 1)[1].strip()
+                    break
+    except Exception:
+        pass
+    try:
+        with open("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor") as fh:
+            info["governor"] = fh.read().strip()
+    except Exception:
+        pass
+    return info
 
 
 def fmt_secs(s):
@@ -1595,21 +1718,24 @@ def write_report(active, benches, results, startup, run_meta, total_wall):
         rs = [row[lang.key] / min(row.values())
               for row in results.values() if lang.key in row]
         if rs:
-            avg[lang.key] = sum(rs) / len(rs)
+            avg[lang.key] = gmean(rs)
 
     # ---- machine-readable twin ----
+    rss = run_meta.get("rss_mb") or {}
     payload = {
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "host": _host(), "total_wall_seconds": total_wall,
+        "host": _host(), "machine": _cpu_info(),
+        "total_wall_seconds": total_wall,
         "workload": run_meta,
         "languages": dict((l.key, {"name": l.name, "version": l.version,
                                    "note": l.note}) for l in active),
         "benchmarks": dict(
             (b["key"], {"title": b["title"], "size": run_meta["sizes"][b["key"]],
                         "checksum": run_meta["checksums"].get(b["key"]),
-                        "seconds": results[b["key"]]}) for b in shown),
+                        "seconds": results[b["key"]],
+                        "peak_rss_mb": rss.get(b["key"], {})}) for b in shown),
         "startup_seconds": startup,
-        "average_slowdown": avg,
+        "geomean_slowdown": avg,
     }
     with open(os.path.join(BUILD, "results.json"), "w") as fh:
         json.dump(payload, fh, indent=1, sort_keys=True)
@@ -1628,9 +1754,9 @@ def write_report(active, benches, results, startup, run_meta, total_wall):
     tiles = []
     if fastest:
         tiles.append(("Fastest overall", name_of[fastest],
-                      "%.1fx average slowdown" % avg[fastest]))
+                      "%.1fx geometric-mean slowdown" % avg[fastest]))
         tiles.append(("Slowest overall", name_of[slowest],
-                      "%.1fx average slowdown" % avg[slowest]))
+                      "%.1fx geometric-mean slowdown" % avg[slowest]))
     tiles.append(("Widest single gap", "%.0fx" % gap, "on %s" % gap_where))
     tiles.append(("This run", "%d × %d" % (len(active), len(shown)),
                   "languages × benchmarks, %gx scale, best of %d" %
@@ -1644,12 +1770,12 @@ def write_report(active, benches, results, startup, run_meta, total_wall):
         entries = [(l, avg[l.key]) for l in active if l.key in avg]
         cards.append(
             '<div class="card wide"><h2>Leaderboard</h2>'
-            '<div class="desc">Average slowdown versus the fastest language, '
+            '<div class="desc">Geometric-mean slowdown versus the fastest language, '
             'across every benchmark completed. Bar length is proportional to it.</div>'
             + bar_rows(entries, lambda v: "%.1fx" % v,
                        lambda l, v: "<span class='t'>%s</span><br>"
-                       "<span class='d'>%.2fx the fastest language, averaged "
-                       "over %d benchmarks</span>"
+                       "<span class='d'>%.2fx the fastest language, geometric "
+                       "mean over %d benchmarks</span>"
                        % (l.name, v, sum(1 for row in results.values() if l.key in row)))
             + '</div>')
 
@@ -1746,7 +1872,20 @@ def main():
                     metavar="CORE",
                     help="pin every benchmark process to one CPU core with "
                          "taskset (steadier numbers; give a core number, or "
-                         "let it pick the last one)")
+                         "let it pick the last one). Note it also squeezes "
+                         "the JIT compiler threads onto that core")
+    ap.add_argument("--serial-gc", action="store_true",
+                    help="ask the GC runtimes to stay on one thread (Java "
+                         "-XX:+UseSerialGC, .NET workstation GC, GOMAXPROCS=1, "
+                         "node --single-threaded-gc) so 'single-threaded' "
+                         "covers the whole process, not just your code")
+    ap.add_argument("--shuffle", action="store_true",
+                    help="run the languages in a fresh random order for every "
+                         "benchmark, so nobody always runs coldest or hottest")
+    ap.add_argument("--selftest", action="store_true",
+                    help="run only the hidden PRNG conformance benchmark in "
+                         "every language and verify each one bit-for-bit "
+                         "against the reference stream, then exit")
     ap.add_argument("--only", default="", help="comma-separated benchmark names")
     ap.add_argument("--skip", default="",
                     help="comma-separated languages to skip (asm, c, cpp, rust, swift, "
@@ -1839,10 +1978,42 @@ def main():
                   CORAL, bold=True))
         return 1
 
+    if args.serial_gc:
+        # Squeeze the runtimes' background GC/JIT helpers onto one thread so
+        # "single-threaded benchmark" describes the whole process. Env vars
+        # land on every child we spawn; the JVM and V8 need argv flags.
+        os.environ["GOMAXPROCS"] = "1"
+        os.environ["DOTNET_gcServer"] = "0"
+        os.environ["DOTNET_gcConcurrent"] = "0"
+        for lang in active:
+            if lang.key == "java":
+                lang.cmd = lang.cmd[:1] + ["-XX:+UseSerialGC"] + lang.cmd[1:]
+                lang.note += ", serial GC"
+            elif lang.key == "js":
+                lang.cmd = lang.cmd[:1] + ["--single-threaded-gc"] + lang.cmd[1:]
+                lang.note += ", single-threaded GC"
+            elif lang.key == "csharp":
+                lang.note = lang.note.replace("server GC", "workstation GC")
+
+    if args.selftest:
+        return prng_selftest(active)
+
     uname = platform.uname()
+    cpuinfo = _cpu_info()
     print()
     print("    " + hue(u"\u2699 machine ", STEEL)
-          + hue("%s %s, %s cores" % (uname.system, uname.machine, os.cpu_count()), SKY))
+          + hue("%s %s, %s cores" % (uname.system, uname.machine, os.cpu_count()), SKY)
+          + (DIM("  (%s)" % cpuinfo["cpu"]) if cpuinfo.get("cpu") else ""))
+    gov = cpuinfo.get("governor")
+    if gov and gov not in ("performance",):
+        print("    " + hue("  \u26a0 cpufreq governor is '%s', not 'performance' -- "
+                           "clock speed will wander mid-run" % gov, GOLD))
+    try:
+        if os.getloadavg()[0] > max(1.0, (os.cpu_count() or 1) * 0.5):
+            print("    " + hue("  \u26a0 load average %.1f -- something else is "
+                               "competing for this machine" % os.getloadavg()[0], GOLD))
+    except OSError:
+        pass
     print("    " + hue(u"\u2261 workload", STEEL)
           + hue(" %g x standard, best of %d run%s per language"
                 % (scale, reps, "" if reps == 1 else "s"), SKY))
@@ -1862,12 +2033,39 @@ def main():
                            "fill against it)"))
 
     # ---- run ----
+    # Golden checksums, recorded from cross-verified runs at the stock scales:
+    # they catch a bug shared by every implementation in a run, which
+    # within-run agreement never can, and they let a single-language run
+    # validate itself.
+    try:
+        with open(os.path.join(HERE, "golden.json")) as fh:
+            GOLDEN = json.load(fh)
+    except Exception:
+        GOLDEN = {}
+
     results = {}   # bench key -> {lang key: seconds}
     sizes, checkvals = {}, {}      # per bench key, for the report
+    rss_all = {}   # bench key -> {lang key: peak MB}
     total_wall = time.perf_counter()
 
     for idx, bench in enumerate(benches, 1):
         size = sized(bench, scale)
+        if size > 2147483647:
+            # several entries parse the size into a 32-bit int (C's atoi,
+            # Java/C#/Rust); past INT32_MAX they overflow or throw, they
+            # don't slow down -- refuse loudly instead of dying weirdly
+            if bench["growth"] == "quadratic":
+                cap = (2147483647.0 / bench["base"]) ** 2
+            elif bench["growth"] == "cubic":
+                cap = (2147483647.0 / bench["base"]) ** 3
+            else:
+                cap = 2147483647.0 / bench["base"]
+            print()
+            print("  " + hue("%s skipped: size %s overflows the 32-bit languages "
+                             "(the largest usable --scale here is about %d)"
+                             % (bench["title"], commas(size), int(cap)),
+                             CORAL, bold=True))
+            continue
         print()
         for line in banner_box("%d/%d   %s" % (idx, len(benches), bench["title"])):
             print("  " + line)
@@ -1876,8 +2074,11 @@ def main():
         print("  " + DIM(bench["why"]))
         print()
 
-        row, checksums, failures, notes = {}, {}, [], []
-        for lang in active:
+        row, checksums, rss_row, failures, notes = {}, {}, {}, [], []
+        run_order = list(active)
+        if args.shuffle:
+            random.shuffle(run_order)
+        for lang in run_order:
             if bench["key"] in lang.sits_out:
                 notes.append("%s %s" % (lang.name.ljust(NAMEW),
                                         lang.sits_out[bench["key"]]))
@@ -1886,10 +2087,11 @@ def main():
             # warm-up runs cost wall-clock like any other rep, so the meter
             # and the timing cache both count them as reps
             eff_reps = reps + (warmup if lang.warmup else 0)
-            with Meter(label, est.estimate(lang.key, bench, size, eff_reps),
-                       tint=lang.tint) as meter:
-                secs, checksum, wall, err = run_one(lang, bench["key"], size,
-                                                    reps, warmup)
+            guess = est.estimate(lang.key, bench, size, eff_reps)
+            with Meter(label, guess, tint=lang.tint) as meter:
+                secs, checksum, wall, rss, err = run_one(
+                    lang, bench["key"], size, reps, warmup,
+                    timeout=max(600.0, 20.0 * guess))
                 meter.ok = err is None
             est.record(lang.key, bench, size, eff_reps, wall)
             if err:
@@ -1899,6 +2101,8 @@ def main():
                 continue
             row[lang.key] = secs
             checksums[lang.key] = checksum
+            if rss is not None:
+                rss_row[lang.key] = round(rss, 1)
         for msg in notes:
             print("    " + DIM(u"\u25cb ") + hue(msg, GOLD))
         for err in failures:
@@ -1933,15 +2137,33 @@ def main():
                 reveal(prefix, bar(secs / slowest), suffix)
 
         distinct = set(checksums.values())
-        if len(distinct) == 1:
-            print("    " + hue(u"\u2714", LIME) + DIM(" checksum %s -- all %d languages agree"
-                                                  % (commas(list(distinct)[0]), len(checksums))))
-        else:
-            print("    " + hue(u"\u2718 CHECKSUMS DISAGREE %r -- this comparison is INVALID"
+        agreed = len(distinct) == 1
+        value = list(distinct)[0] if agreed else None
+        want = GOLDEN.get(bench["key"], {}).get(str(size)) if agreed else None
+        if agreed and want is not None and value != want:
+            print("    " + hue(u"\u2718 checksum %s does not match the recorded golden "
+                               "value %s -- every implementation here shares a bug; "
+                               "this row is EXCLUDED" % (commas(value), commas(want)),
+                               CORAL, bold=True))
+            agreed = False
+        if agreed:
+            print("    " + hue(u"\u2714", LIME)
+                  + DIM(" checksum %s -- all %d languages agree%s"
+                        % (commas(value), len(checksums),
+                           ", matches golden" if want is not None else "")))
+            if row and min(row.values()) < 0.05:
+                print("    " + DIM("  (fastest entry under 50 ms -- ratios this small "
+                                   "are mostly noise; raise --scale to mean them)"))
+            # an invalid row is dropped entirely: it must not feed the summary,
+            # the leaderboard, the human-scale section or results.json
+            results[bench["key"]] = row
+            sizes[bench["key"]] = size
+            checkvals[bench["key"]] = value
+            rss_all[bench["key"]] = rss_row
+        elif len(distinct) > 1:
+            print("    " + hue(u"\u2718 CHECKSUMS DISAGREE %r -- this comparison is "
+                               "INVALID and the row is excluded from every summary"
                                % checksums, CORAL, bold=True))
-        results[bench["key"]] = row
-        sizes[bench["key"]] = size
-        checkvals[bench["key"]] = list(distinct)[0] if len(distinct) == 1 else None
 
     total_wall = time.perf_counter() - total_wall
 
@@ -1953,7 +2175,7 @@ def main():
             print("  " + line)
         print()
         shown = [b for b in benches if b["key"] in results]
-        hdr = "".join("%12s" % b["key"][:11] for b in shown) + "%12s" % "average"
+        hdr = "".join("%12s" % b["key"][:11] for b in shown) + "%12s" % "geo mean"
         print("      " + " " * NAMEW + hue(hdr, AQUA, bold=True))
         for lang in active:
             cells, ratios = [], []
@@ -1965,7 +2187,7 @@ def main():
                 r = row[lang.key] / min(row.values())
                 ratios.append(r)
                 cells.append(hue("%12s" % ("%.1fx" % r), heat_ratio(r)))
-            avg = sum(ratios) / len(ratios) if ratios else 0
+            avg = gmean(ratios) if ratios else 0
             print("      %s%s%s" % (hue(lang.name.ljust(NAMEW), lang.tint, bold=True),
                                     "".join(cells),
                                     hue("%12s" % ("%.1fx" % avg), heat_ratio(avg), bold=True)))
@@ -1976,13 +2198,13 @@ def main():
         rs = [row[lang.key] / min(row.values())
               for row in results.values() if lang.key in row]
         if rs:
-            avg_ratio[lang.key] = sum(rs) / len(rs)
+            avg_ratio[lang.key] = gmean(rs)
     if len(avg_ratio) > 1 and len(results) > 1:
         print()
         for line in banner_box("THE LEADERBOARD", a=LIME, b=SKY, tint=GOLD):
             print("  " + line)
-        print("  " + DIM("Average slowdown across every benchmark completed, "
-                         "fastest first."))
+        print("  " + DIM("Geometric-mean slowdown across every benchmark "
+                         "completed, fastest first."))
         print()
         worst_avg = max(avg_ratio.values())
         ranked = sorted((l for l in active if l.key in avg_ratio),
@@ -2003,7 +2225,7 @@ def main():
             rs = [row[lang.key] / min(row.values())
                   for row in results.values() if lang.key in row]
             if rs:
-                avg[lang.key] = sum(rs) / len(rs)
+                avg[lang.key] = gmean(rs)
         ranked = sorted((l for l in active if l.key in avg),
                         key=lambda l: avg[l.key])[:3]
         if ranked:
@@ -2093,7 +2315,8 @@ def main():
         try:
             report = write_report(active, benches, results, startup,
                                   {"scale": scale, "reps": reps, "sizes": sizes,
-                                   "checksums": checkvals}, total_wall)
+                                   "checksums": checkvals, "rss_mb": rss_all},
+                                  total_wall)
         except Exception as e:
             print()
             print("    " + DIM("report skipped: %s" % e))

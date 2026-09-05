@@ -47,6 +47,7 @@ n_quicksort:   db "quicksort", 0
 n_wordcount:   db "wordcount", 0
 n_binarytrees: db "binarytrees", 0
 n_matmul:      db "matmul", 0
+n_prng:        db "prng", 0
 
 align 8
 d_one:         dq 1.0
@@ -777,6 +778,11 @@ dispatch:
     call    strcmp
     test    eax, eax
     jz      .matmul
+    lea     rsi, [n_prng]
+    mov     rdi, rbx
+    call    strcmp
+    test    eax, eax
+    jz      .prng
     mov     rdi, [stderr]
     lea     rsi, [msg_unknown]
     mov     rdx, rbx
@@ -807,6 +813,10 @@ dispatch:
 .matmul:
     mov     edi, r12d
     call    bench_matmul
+    jmp     .ret
+.prng:
+    mov     edi, r12d
+    call    bench_prng
 .ret:
     pop     r13
     pop     r12
@@ -901,6 +911,33 @@ main:
     call    fprintf
     mov     eax, 2
     jmp     .out
+
+; ---------- hidden: prng conformance -- not part of the scored suite ----------
+; run.py --selftest uses it to validate each language's PRNG directly.
+; edi = n; h = (h*31 + rng_next()) mod 2^32, seed 12345; returns h in rax.
+bench_prng:
+    push    rbx
+    push    r12
+    mov     r12d, edi
+    mov     rax, 12345
+    mov     [rng_state], rax
+    xor     ebx, ebx             ; h
+    test    r12d, r12d
+    jle     .done
+.loop:
+    call    rng_next             ; clobbers rax/rdx only; result in eax
+    mov     edx, ebx
+    shl     edx, 5
+    sub     edx, ebx             ; h*31, wrapping in 32 bits
+    add     edx, eax
+    mov     ebx, edx
+    dec     r12d
+    jnz     .loop
+.done:
+    mov     eax, ebx             ; zero-extends into rax
+    pop     r12
+    pop     rbx
+    ret
 
 ; ---------- shared failure exit ----------
 oom_exit:

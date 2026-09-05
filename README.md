@@ -124,7 +124,7 @@ measuring one thing.
 | 2 | **Sieve of Eratosthenes** | Integer math over a 50 M-entry array | Memory-bound. The CPU waits on RAM, so the gap *narrows*. |
 | 3 | **Quicksort** | Branches, swaps, recursion, cache misses | Hand-written in all fifteen, so it measures the language rather than the quality of its sort library. |
 | 4 | **Word frequency count** | String hashing into a hash map | The revenge of the scripting languages — see below. |
-| 5 | **Binary trees** | Allocation, pointer chasing, GC pressure | Nothing computes; the whole cost is memory management. The JVM's allocator tends to *beat malloc/free* here, and Python — refcounting small tuples — has its best row. |
+| 5 | **Binary trees** | Allocation, pointer chasing, GC pressure | Nothing computes; the whole cost is memory management. The JVM's allocator tends to *beat malloc/free* here — see the GC caveat below before quoting that. |
 | 6 | **Matrix multiply** | n³ multiply-adds over flat 2D arrays | The classic numeric kernel, and the widest gap in the whole suite: index arithmetic on every operation is exactly what an interpreter does worst. |
 
 Benchmark 4 is the important one, and it is the one people usually leave out.
@@ -171,10 +171,30 @@ A language benchmark is very easy to accidentally rig. Guards used here:
 
 **Every language prints a checksum.** All sixteen entries compute the same value from the
 same deterministic PRNG (an identical 64-bit LCG in each file). If the
-checksums ever disagree, the runner prints `CHECKSUMS DISAGREE` and tells you
-the comparison is invalid. This also stops C's optimizer from deleting a loop
-whose result nobody uses — a classic way to accidentally "prove" C is
-infinitely fast.
+checksums ever disagree, the runner prints `CHECKSUMS DISAGREE` **and drops
+that row from every summary, leaderboard and results.json** — an invalid
+comparison must not leave numbers behind. This also stops C's optimizer from
+deleting a loop whose result nobody uses — a classic way to accidentally
+"prove" C is infinitely fast.
+
+**The floats are pinned down.** GCC contracts `a*b + c` into fused
+multiply-adds by default (`-ffp-contract=fast`), which changes the rounding of
+mandelbrot's inner loop — invisibly at the standard size, and a genuine
+checksum mismatch at `--heavy`. The C and C++ builds therefore carry
+`-ffp-contract=off`, and `bench.go` forces its intermediate roundings with
+explicit `float64()` conversions, so every language computes the same doubles.
+
+**The PRNG has its own conformance test.** `python3 run.py --selftest` runs a
+hidden benchmark that checksums the first million raw generator outputs in
+every language against a reference computed in arbitrary-precision Python.
+Several entries build the 64-bit multiply out of 32-bit halves (JavaScript,
+PHP, Ruby, COBOL); this validates every bit of that code directly instead of
+hoping quicksort trips over a wrong one.
+
+**Golden checksums are recorded.** `golden.json` holds cross-verified
+checksums for every benchmark at the `--quick`, standard and `--heavy` sizes.
+Within-run agreement cannot catch a bug that every implementation shares;
+the goldens can, and they let a single-language run validate itself.
 
 **Best-of-N, inside one process.** Each program runs its benchmark N times
 (default 3) and reports the fastest. The repeats happen *in-process*, which
@@ -362,10 +382,26 @@ and chases pointers. Both are *library defaults you can change*, which is a
 much less exciting headline than "C++ is 1.9× slower than C" and is what the
 number actually says.
 
-**These are single-threaded.** Go's headline feature is that spreading this
-work across cores is nearly free. C can do it too, with more ceremony and more
-ways to get it wrong. This suite deliberately measures none of that, so it
-understates Go considerably.
+**These are single-threaded — except the garbage collectors.** Go's headline
+feature is that spreading this work across cores is nearly free; this suite
+deliberately measures none of that, so it understates Go considerably. And
+"single-threaded" quietly means *your code*: G1, .NET's server GC, Go's
+background marker and V8's parallel scavenger all use spare cores, which is
+part of why the managed runtimes look so good on benchmark 5. Run with
+`--serial-gc` to confine the runtimes to one thread and see how much of that
+row is borrowed cores.
+
+**Benchmark 4 is not the same work in every language.** Three asymmetries to
+know before quoting it. The input generator is a real share of the timed loop
+in the interpreters — in pure Python the two PRNG calls per word cost several
+times the dict work they feed. Java, Python, V8, PHP and Lua cache or intern
+string hashes, so they hash each of the 5,000 words once and probe ever after,
+while C, C++, Rust, Go, Swift, C# and Ruby re-hash the bytes on all 10M
+lookups. And Python and JavaScript pay two map operations per word (get then
+set) where the single-lookup idiom exists in C++ (`++counts[w]`), Rust
+(`entry()`), Java, Go, C# and Swift. All sixteen still do the same *job*; they
+do not all do the same *work*, which is exactly the kind of thing a "hash map
+benchmark" is usually hiding.
 
 **Java's ranking depends entirely on how long you let it run.** On `--quick`
 it looks 2–3× slower than C; at the standard scale above it averages 1.1×. That
@@ -399,8 +435,8 @@ frequently, and correctly, irrelevant.
 
 ```
 bench.asm     Assembly     nasm -felf64, linked against libc (x86-64 Linux only)
-bench.c       C            gcc -O3 -march=native
-bench.cpp     C++          g++ -O3 -march=native -std=c++17
+bench.c       C            gcc -O3 -march=native -ffp-contract=off
+bench.cpp     C++          g++ -O3 -march=native -ffp-contract=off -std=c++17
 bench.rs      Rust         rustc -Copt-level=3 -Ctarget-cpu=native (no Cargo, no crates, no unsafe)
 bench.swift   Swift        swiftc -Ounchecked (no packages, no Foundation)
 bench.go      Go           go build, GOAMD64=v3 on x86-64
@@ -415,7 +451,16 @@ bench_numpy.py  NumPy      the same python3, loops in NumPy/BLAS (enters 3 of th
 bench.rb      Ruby         ruby --yjit
 bench.cob     COBOL        cobc -x -O3 -fno-trunc -fstatic-call (GnuCOBOL 3+)
 run.py        builds, runs, compares, prints
+golden.json   cross-verified checksums for the stock sizes (see honesty rails)
+tests/        unit tests for run.py's logic: python3 -m unittest discover tests
 ```
+
+Summary tables and the leaderboard use the **geometric mean** of the
+per-benchmark slowdowns (Fleming & Wallace, CACM 1986): unlike the arithmetic
+mean it does not overweight the worst benchmark, and the ranking cannot change
+with the choice of baseline. `results.json` also records each run's peak RSS
+per language and benchmark — Lua's 1 GB sieve is a finding, so it is measured
+rather than asserted.
 
 `run.py` also writes a few files into `build/`, all safe to delete:
 
@@ -500,7 +545,13 @@ Also: about **1 GB of free RAM** at the standard scale if Lua is in the run
                    by the JIT runtimes (Java, C#, JavaScript) -- the JMH
                    treatment for cold-start complaints
 --pin [CORE]       pin every benchmark process to one CPU core via taskset
-                   (steadier numbers, the way the Benchmarks Game runs)
+                   (steadier numbers, the way the Benchmarks Game runs; note
+                   it also squeezes JIT compiler threads onto that core)
+--serial-gc        confine the GC runtimes to one thread (Java serial GC,
+                   .NET workstation GC, GOMAXPROCS=1, V8 single-threaded GC)
+--shuffle          fresh random language order per benchmark, so nobody
+                   always runs coldest or hottest
+--selftest         verify every language's PRNG bit-for-bit and exit
 --only a,b         just these benchmarks
 --skip-bench a,b   exclude benchmarks, keep everything else
 --skip python,lua  exclude languages, e.g. when they are the slow part

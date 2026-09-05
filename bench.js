@@ -207,6 +207,17 @@ function benchMatmul(n) {
   return h;
 }
 
+// ---------- prng: hidden conformance check, not part of the scored suite ----------
+// run.py --selftest uses it to validate the PRNG bit-for-bit -- this is the
+// direct test of the 32-bit-halves multiply above. A plain call per step is
+// the point: correctness, not speed.
+function benchPrng(n) {
+  rngSeed(12345);
+  let h = 0;
+  for (let i = 0; i < n; i++) h = (Math.imul(h, 31) + rngNext()) >>> 0;
+  return h;
+}
+
 const BENCHMARKS = {
   mandelbrot: benchMandelbrot,
   sieve: benchSieve,
@@ -214,6 +225,7 @@ const BENCHMARKS = {
   wordcount: benchWordcount,
   binarytrees: benchBinarytrees,
   matmul: benchMatmul,
+  prng: benchPrng,   // hidden: PRNG conformance, see above
 };
 
 function main() {

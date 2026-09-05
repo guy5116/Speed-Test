@@ -254,6 +254,18 @@ fn bench_matmul(n: i32) -> i64 {
     h as i64
 }
 
+// ---------- hidden: prng conformance check, not part of the scored suite ----------
+// run.py --selftest uses it to validate each language's PRNG directly; several
+// languages implement the 64-bit multiply in 32-bit halves and this checks every bit.
+fn bench_prng(n: i32) -> i64 {
+    let mut rng = Rng::new(12345);
+    let mut h: u32 = 0;
+    for _ in 0..n {
+        h = h.wrapping_mul(31).wrapping_add(rng.next());
+    }
+    h as i64
+}
+
 fn dispatch(name: &str, size: i32) -> i64 {
     match name {
         "mandelbrot" => bench_mandelbrot(size),
@@ -262,6 +274,7 @@ fn dispatch(name: &str, size: i32) -> i64 {
         "wordcount" => bench_wordcount(size),
         "binarytrees" => bench_binarytrees(size),
         "matmul" => bench_matmul(size),
+        "prng" => bench_prng(size),
         _ => {
             eprintln!("unknown benchmark: {}", name);
             process::exit(2);

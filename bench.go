@@ -40,8 +40,11 @@ func benchMandelbrot(n int) int64 {
 				if zr2+zi2 > 4.0 {
 					break
 				}
-				zi = 2.0*zr*zi + ci
-				zr = zr2 - zi2 + cr
+				// the spec lets the compiler fuse these multiply-adds (FMA); the
+				// explicit float64() conversions force the intermediate rounding
+				// so every language sees the same doubles
+				zi = float64(2.0*zr*zi) + ci
+				zr = float64(zr2-zi2) + cr
 				i++
 			}
 			total += int64(i)
@@ -233,6 +236,18 @@ func benchMatmul(n int) int64 {
 	return int64(h)
 }
 
+// ---------- hidden: prng conformance check, not part of the scored suite ----------
+// run.py --selftest uses it to validate each language's PRNG directly; several
+// languages implement the 64-bit multiply in 32-bit halves and this checks every bit.
+func benchPrng(n int) int64 {
+	rngSeed(12345)
+	var h uint32
+	for i := 0; i < n; i++ {
+		h = h*31 + rngNext()
+	}
+	return int64(h)
+}
+
 func dispatch(name string, size int) int64 {
 	switch name {
 	case "mandelbrot":
@@ -247,6 +262,8 @@ func dispatch(name string, size int) int64 {
 		return benchBinarytrees(size)
 	case "matmul":
 		return benchMatmul(size)
+	case "prng":
+		return benchPrng(size)
 	}
 	fmt.Fprintf(os.Stderr, "unknown benchmark: %s\n", name)
 	os.Exit(2)

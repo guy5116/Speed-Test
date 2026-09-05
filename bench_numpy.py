@@ -145,10 +145,23 @@ def bench_matmul(n):
     return int((v * pows[::-1]).sum(dtype=np.uint32))
 
 
+# ---------- hidden: prng conformance check, not part of the scored suite ----------
+# run.py --selftest uses it; for this file it is the direct test of the lane
+# decomposition in rng_block -- every one of the n outputs, in order.
+def bench_prng(n):
+    rng_seed(12345)
+    v = rng_block(n).astype(np.uint32)
+    base = np.full(v.size, 31, dtype=np.uint32)
+    base[0] = 1
+    pows = np.cumprod(base, dtype=np.uint32)       # same fold as bench_matmul
+    return int((v * pows[::-1]).sum(dtype=np.uint32))
+
+
 BENCHMARKS = {
     "mandelbrot": bench_mandelbrot,
     "sieve": bench_sieve,
     "matmul": bench_matmul,
+    "prng": bench_prng,
 }
 
 

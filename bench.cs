@@ -198,6 +198,16 @@ class Bench {
         return (long)h;
     }
 
+    // ---------- hidden: prng conformance check, not part of the scored suite ----------
+    // run.py --selftest uses it to validate each language's PRNG directly; several
+    // languages implement the 64-bit multiply in 32-bit halves and this checks every bit.
+    static long BenchPrng(int n) {
+        RngSeed(12345);
+        uint h = 0;
+        for (int i = 0; i < n; i++) h = h * 31u + RngNext();
+        return (long)h;
+    }
+
     static long Run(string name, int size) {
         switch (name) {
             case "mandelbrot":  return BenchMandelbrot(size);
@@ -206,6 +216,7 @@ class Bench {
             case "wordcount":   return BenchWordcount(size);
             case "binarytrees": return BenchBinarytrees(size);
             case "matmul":      return BenchMatmul(size);
+            case "prng":        return BenchPrng(size);
             default:
                 Console.Error.WriteLine("unknown benchmark: " + name);
                 Environment.Exit(2);

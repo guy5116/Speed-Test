@@ -222,12 +222,23 @@ func benchMatmul(_ n: Int) -> Int64 {
         let ib = i * n
         for j in 0..<n {
             var s: UInt32 = 0
-            for k in 0..<n { s = s &+ a[ib + k] &* b[k * n + j] }
+            var bi = j  // walks b down the column; saves a multiply per step
+            for k in 0..<n { s = s &+ a[ib + k] &* b[bi]; bi += n }
             c[ib + j] = s
         }
     }
     var h: UInt32 = 0
     for i in 0..<(n * n) { h = h &* 31 &+ c[i] }
+    return Int64(h)
+}
+
+// ---------- hidden: prng conformance check, not part of the scored suite ----------
+// run.py --selftest uses it to validate each language's PRNG directly; several
+// languages implement the 64-bit multiply in 32-bit halves and this checks every bit.
+func benchPrng(_ n: Int) -> Int64 {
+    rngSeed(12345)
+    var h: UInt32 = 0
+    for _ in 0..<n { h = h &* 31 &+ rngNext() }
     return Int64(h)
 }
 
@@ -240,6 +251,7 @@ func dispatch(_ name: String, _ size: Int) -> Int64? {
     case "wordcount": return benchWordcount(size)
     case "binarytrees": return benchBinarytrees(size)
     case "matmul": return benchMatmul(size)
+    case "prng": return benchPrng(size)
     default: return nil
     }
 }

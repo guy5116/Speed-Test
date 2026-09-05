@@ -16,7 +16,7 @@
 # equivalent of a byte array, the way typed arrays are JavaScript's.
 use strict;
 use warnings;
-use Time::HiRes qw(time);
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
 
 # ---------- shared deterministic PRNG (identical in every language here) ----------
 my $rng_state = 0;
@@ -243,6 +243,22 @@ sub bench_matmul {
     return $h;
 }
 
+# ---------- prng: hidden conformance check, not part of the scored suite ----------
+# run.py --selftest uses it to validate the PRNG bit-for-bit. A plain call
+# per step is the point: correctness, not speed.
+sub bench_prng {
+    my ($n) = @_;
+    rng_seed(12345);
+    my $h = 0;
+    {
+        use integer;
+        for (1 .. $n) {
+            $h = ($h * 31 + rng_next()) & 0xFFFFFFFF;
+        }
+    }
+    return $h;
+}
+
 # ---------- main ----------
 my %BENCHMARKS = (
     mandelbrot  => \&bench_mandelbrot,
@@ -251,6 +267,7 @@ my %BENCHMARKS = (
     wordcount   => \&bench_wordcount,
     binarytrees => \&bench_binarytrees,
     matmul      => \&bench_matmul,
+    prng        => \&bench_prng,    # hidden: PRNG conformance, see above
 );
 
 sub main {
@@ -274,9 +291,10 @@ sub main {
     my $best = 9**99;
     my $result;
     for my $r (0 .. $reps - 1) {
-        my $t0 = time();
+        # CLOCK_MONOTONIC, not time(): wall-clock jumps if NTP steps the clock
+        my $t0 = clock_gettime(CLOCK_MONOTONIC);
         my $v = $fn->($size);
-        my $elapsed = (time() - $t0) * 1000.0;
+        my $elapsed = (clock_gettime(CLOCK_MONOTONIC) - $t0) * 1000.0;
         $best = $elapsed if $elapsed < $best;
         if ($r == 0) {
             $result = $v;

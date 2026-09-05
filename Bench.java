@@ -178,12 +178,23 @@ public class Bench {
             int ib = i * n;
             for (int j = 0; j < n; j++) {
                 int s = 0;
-                for (int k = 0; k < n; k++) s += a[ib + k] * b[k * n + j];
+                int bi = j;   // walks b down the column; saves a multiply per step
+                for (int k = 0; k < n; k++) { s += a[ib + k] * b[bi]; bi += n; }
                 c[ib + j] = s;
             }
         }
         int h = 0;
         for (int i = 0; i < n * n; i++) h = h * 31 + c[i];
+        return Integer.toUnsignedLong(h);
+    }
+
+    // ---------- hidden: prng conformance check, not part of the scored suite ----------
+    // run.py --selftest uses it to validate each language's PRNG directly; several
+    // languages implement the 64-bit multiply in 32-bit halves and this checks every bit.
+    static long benchPrng(int n) {
+        rngSeed(12345);
+        int h = 0;
+        for (int i = 0; i < n; i++) h = h * 31 + rngNext();
         return Integer.toUnsignedLong(h);
     }
 
@@ -230,6 +241,7 @@ public class Bench {
             case "wordcount":  return benchWordcount(size);
             case "binarytrees": return benchBinarytrees(size);
             case "matmul":     return benchMatmul(size);
+            case "prng":       return benchPrng(size);
             default:
                 System.err.println("unknown benchmark: " + name);
                 System.exit(2);

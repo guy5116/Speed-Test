@@ -46,6 +46,9 @@ WORKING-STORAGE SECTION.
 01 WS-R             USAGE BINARY-LONG.
 01 WS-RESULT        USAGE BINARY-DOUBLE.
 01 WS-FIRST         USAGE BINARY-DOUBLE.
+*> hidden prng conformance benchmark (run.py --selftest)
+01 PR-H             USAGE BINARY-LONG UNSIGNED.
+01 PR-I             USAGE BINARY-DOUBLE.
 01 WS-NOW-MS        USAGE COMP-2.
 01 WS-T0            USAGE COMP-2.
 01 WS-ELAPSED       USAGE COMP-2.
@@ -236,6 +239,7 @@ MAIN-PARA.
         WHEN "wordcount"
         WHEN "binarytrees"
         WHEN "matmul"
+        WHEN "prng"
             CONTINUE
         WHEN OTHER
             DISPLAY "unknown benchmark: " FUNCTION TRIM(WS-BENCH)
@@ -281,6 +285,7 @@ RUN-ONE.
         WHEN "wordcount"   PERFORM BENCH-WORDCOUNT
         WHEN "binarytrees" PERFORM BENCH-BINARYTREES
         WHEN "matmul"      PERFORM BENCH-MATMUL
+        WHEN "prng"        PERFORM BENCH-PRNG
     END-EVALUATE.
 
 GET-NOW-MS.
@@ -301,6 +306,18 @@ RNG-NEXT.
     MOVE RNG-T1-LO TO RNG-SL
     MOVE RNG-T4-LO TO RNG-SH
     COMPUTE RNG-OUT = RNG-SH / 2.
+
+*> ---------- hidden: prng conformance -- not part of the scored suite ----------
+*> run.py --selftest uses it to validate the split-halves PRNG above directly;
+*> -fno-trunc makes the unsigned 32-bit store wrap, like the other checksums.
+BENCH-PRNG.
+    PERFORM RNG-SEED-12345
+    MOVE 0 TO PR-H
+    PERFORM VARYING PR-I FROM 1 BY 1 UNTIL PR-I > WS-SIZE
+        PERFORM RNG-NEXT
+        COMPUTE PR-H = PR-H * 31 + RNG-OUT
+    END-PERFORM
+    MOVE PR-H TO WS-RESULT.
 
 *> ---------- 1. mandelbrot: tight floating-point loop, zero allocation ----------
 BENCH-MANDELBROT.

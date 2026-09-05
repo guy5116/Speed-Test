@@ -241,6 +241,20 @@ local function bench_matmul(n)
   return h
 end
 
+-- ---------- prng: hidden conformance check, not part of the scored suite ----------
+-- run.py --selftest uses it to validate the PRNG bit-for-bit. A plain call
+-- per step is the point: correctness, not speed.
+local function bench_prng(n)
+  rng_seed(12345)
+  local h = 0
+  local i = 0
+  while i < n do
+    h = (h * 31 + rng_next()) & 0xFFFFFFFF
+    i = i + 1
+  end
+  return h
+end
+
 local BENCHMARKS = {
   mandelbrot = bench_mandelbrot,
   sieve = bench_sieve,
@@ -248,6 +262,7 @@ local BENCHMARKS = {
   wordcount = bench_wordcount,
   binarytrees = bench_binarytrees,
   matmul = bench_matmul,
+  prng = bench_prng,   -- hidden: PRNG conformance, see above
 }
 
 local function main()

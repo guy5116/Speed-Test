@@ -183,12 +183,23 @@ static long long bench_matmul(int n) {
         int ib = i * n;
         for (int j = 0; j < n; j++) {
             uint32_t s = 0;
-            for (int k = 0; k < n; k++) s += a[ib + k] * b[k * n + j];
+            int bi = j;   // walks b down the column; saves a multiply per step
+            for (int k = 0; k < n; k++) { s += a[ib + k] * b[bi]; bi += n; }
             c[ib + j] = s;
         }
     }
     uint32_t h = 0;
     for (int i = 0; i < n * n; i++) h = h * 31u + c[i];
+    return (long long)h;
+}
+
+// ---------- hidden: prng conformance check, not part of the scored suite ----------
+// run.py --selftest uses it to validate each language's PRNG directly; several
+// languages implement the 64-bit multiply in 32-bit halves and this checks every bit.
+static long long bench_prng(int n) {
+    rng_seed(12345);
+    uint32_t h = 0;
+    for (int i = 0; i < n; i++) h = h * 31u + rng_next();
     return (long long)h;
 }
 
@@ -199,6 +210,7 @@ static long long dispatch(const char *name, int size) {
     if (!strcmp(name, "wordcount"))   return bench_wordcount(size);
     if (!strcmp(name, "binarytrees")) return bench_binarytrees(size);
     if (!strcmp(name, "matmul"))      return bench_matmul(size);
+    if (!strcmp(name, "prng"))        return bench_prng(size);
     fprintf(stderr, "unknown benchmark: %s\n", name);
     exit(2);
 }

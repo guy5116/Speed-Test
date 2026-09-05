@@ -259,6 +259,21 @@ def bench_matmul(n)
   h
 end
 
+# ---------- prng: hidden conformance check, not part of the scored suite ----------
+# run.py --selftest uses it to validate the PRNG bit-for-bit -- this is the
+# direct test of the 16-bit-limb multiply in rng_next. A plain call per step
+# is the point: correctness, not speed.
+def bench_prng(n)
+  rng_seed(12345)
+  h = 0
+  i = 0
+  while i < n
+    h = (h * 31 + rng_next) & MASK32
+    i += 1
+  end
+  h
+end
+
 BENCHMARKS = {
   "mandelbrot" => method(:bench_mandelbrot),
   "sieve" => method(:bench_sieve),
@@ -266,6 +281,7 @@ BENCHMARKS = {
   "wordcount" => method(:bench_wordcount),
   "binarytrees" => method(:bench_binarytrees),
   "matmul" => method(:bench_matmul),
+  "prng" => method(:bench_prng), # hidden: PRNG conformance, see above
 }.freeze
 
 def main
@@ -277,12 +293,18 @@ def main
   size = ARGV[1].to_i
   reps = ARGV.length > 2 ? ARGV[2].to_i : 1
   reps = 1 if reps < 1
+  warmup = ARGV.length > 3 ? ARGV[3].to_i : 0
+  warmup = 0 if warmup < 0
 
   fn = BENCHMARKS[name]
   if fn.nil?
     warn "unknown benchmark: #{name}"
     return 2
   end
+
+  # Untimed warm-up (run.py --warmup): lets YJIT reach steady state before
+  # the clock starts. Results discarded.
+  warmup.times { fn.call(size) }
 
   # Best-of-N: the fastest run is the one least polluted by scheduler noise,
   # cold caches and (for the JIT languages) not-yet-compiled code.

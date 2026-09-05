@@ -287,6 +287,19 @@ function bench_matmul($n) {
     return $h;
 }
 
+# ---------- prng: hidden conformance check, not part of the scored suite ----------
+# run.py --selftest uses it to validate the PRNG bit-for-bit -- this is the
+# direct test of the 32-bit-halves multiply in rng_next(). A plain call per
+# step is the point: correctness, not speed.
+function bench_prng($n) {
+    rng_seed(12345);
+    $h = 0;
+    for ($i = 0; $i < $n; $i++) {
+        $h = ($h * 31 + rng_next()) & 0xFFFFFFFF;
+    }
+    return $h;
+}
+
 # ---------- main ----------
 const BENCHMARKS = [
     'mandelbrot'  => 'bench_mandelbrot',
@@ -295,6 +308,7 @@ const BENCHMARKS = [
     'wordcount'   => 'bench_wordcount',
     'binarytrees' => 'bench_binarytrees',
     'matmul'      => 'bench_matmul',
+    'prng'        => 'bench_prng',    # hidden: PRNG conformance, see above
 ];
 
 function main($argv) {
@@ -306,12 +320,18 @@ function main($argv) {
     $size = (int)$argv[2];
     $reps = isset($argv[3]) ? (int)$argv[3] : 1;
     if ($reps < 1) $reps = 1;
+    $warmup = isset($argv[4]) ? (int)$argv[4] : 0;
+    if ($warmup < 0) $warmup = 0;
 
     if (!isset(BENCHMARKS[$name])) {
         fwrite(STDERR, "unknown benchmark: $name\n");
         return 2;
     }
     $fn = BENCHMARKS[$name];
+
+    # Untimed warm-up (run.py --warmup): lets opcache's tracing JIT reach
+    # steady state before the clock starts. Results discarded.
+    for ($w = 0; $w < $warmup; $w++) $fn($size);
 
     # Best-of-N: the fastest run is the one least polluted by scheduler noise,
     # cold caches and (for the JIT languages) not-yet-compiled code.

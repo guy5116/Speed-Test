@@ -152,7 +152,11 @@ def bench_wordcount(n):
 # cyclic GC sweeping through periodically.
 def make_tree(d):
     if d == 0:
-        return (None, None)
+        # Built from a local on purpose: a literal (None, None) is folded into
+        # a compile-time constant, so all 2,048 leaves would be ONE shared
+        # tuple and Python would allocate half as many nodes as everyone else.
+        none = None
+        return (none, none)
     return (make_tree(d - 1), make_tree(d - 1))
 
 
@@ -181,12 +185,25 @@ def bench_matmul(n):
         ib = i * n
         for j in range(n):
             s = 0
+            bi = j  # walks b down the column; saves a multiply per step
             for k in range(n):
-                s += a[ib + k] * b[k * n + j]
+                s += a[ib + k] * b[bi]
+                bi += n
             c[ib + j] = s
     h = 0
     for v in c:
         h = (h * 31 + v) & MASK32
+    return h
+
+
+# ---------- hidden: prng conformance check, not part of the scored suite ----------
+# run.py --selftest uses it to validate each language's PRNG directly; this
+# bigint implementation is the reference the others are held against.
+def bench_prng(n):
+    rng_seed(12345)
+    h = 0
+    for _ in range(n):
+        h = (h * 31 + rng_next()) & MASK32
     return h
 
 
@@ -197,6 +214,7 @@ BENCHMARKS = {
     "wordcount": bench_wordcount,
     "binarytrees": bench_binarytrees,
     "matmul": bench_matmul,
+    "prng": bench_prng,
 }
 
 
