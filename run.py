@@ -1079,15 +1079,13 @@ class Estimator:
 PIN = []
 
 
-def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
-    """Returns (compute_seconds, checksum, wall_seconds, peak_rss_mb, error).
-    The error is returned rather than printed, so the caller can stop the
-    spinner first. The child is reaped with os.wait4 so its rusage comes back
-    with it -- that is where the peak-RSS figure comes from -- and a deadline
-    keeps one hung toolchain from hanging the whole run."""
-    argv = PIN + lang.cmd + [bench_key, str(size), str(reps)]
-    if warmup and lang.warmup:
-        argv.append(str(warmup))
+def launch(argv, timeout=600.0):
+    """Run one child process to completion. Returns (returncode, stdout,
+    stderr, wall_seconds, peak_rss_mb, error); error is set when the child
+    could not be launched or blew the deadline. The child is reaped with
+    os.wait4 so its rusage comes back with it -- that is where the peak-RSS
+    figure comes from -- and the deadline keeps one hung toolchain from
+    hanging the whole run."""
     # Temp files, not pipes: only stdout is guaranteed to be one line. A child
     # that writes more than the pipe buffer (~64 KB) to stderr -- PHP
     # deprecation spam, a JVM hs_err dump -- would fill a pipe and block
@@ -1101,7 +1099,7 @@ def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
     except Exception as e:
         outf.close()
         errf.close()
-        return None, None, None, None, "%s failed to launch: %s" % (lang.name, e)
+        return None, None, None, None, None, "failed to launch: %s" % e
 
     rss_mb = None
     if hasattr(os, "wait4"):
@@ -1122,8 +1120,8 @@ def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
                 proc.returncode = -9
                 outf.close()
                 errf.close()
-                return None, None, None, None, "%s timed out after %s" % (
-                    lang.name, human_time(timeout))
+                return None, None, None, None, None, "timed out after %s" % (
+                    human_time(timeout))
             time.sleep(0.02)
     else:                        # non-POSIX fallback: no rusage available
         try:
@@ -1133,8 +1131,8 @@ def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
             proc.wait()
             outf.close()
             errf.close()
-            return None, None, None, None, "%s timed out after %s" % (
-                lang.name, human_time(timeout))
+            return None, None, None, None, None, "timed out after %s" % (
+                human_time(timeout))
     wall = time.perf_counter() - t0
     outf.seek(0)
     out = outf.read()
@@ -1142,20 +1140,64 @@ def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
     errf.seek(0)
     errout = errf.read()
     errf.close()
+    return proc.returncode, out, errout, wall, rss_mb, None
 
-    if proc.returncode != 0:
+
+def parse_output(text):
+    """Parse a child's one-line protocol output, `OK <bench> <checksum> <ms>`.
+    Returns (compute_seconds, checksum, error)."""
+    parts = (text or "").split()
+    if len(parts) != 4 or parts[0] != "OK":
+        return None, None, "printed something unexpected: %r" % (text or "")[:80]
+    try:
+        secs = float(parts[3]) / 1000.0
+        checksum = int(parts[2])
+    except ValueError:
+        return None, None, "printed something unexpected: %r" % (text or "")[:80]
+    # Clamped away from zero: a compiled language at a tiny --scale can report
+    # 0.000 ms, and a literal zero would poison every ratio downstream.
+    return max(secs, 1e-9), checksum, None
+
+
+def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
+    """Returns (compute_seconds, checksum, wall_seconds, peak_rss_mb, error).
+    The error is returned rather than printed, so the caller can stop the
+    spinner first."""
+    argv = PIN + lang.cmd + [bench_key, str(size), str(reps)]
+    if warmup and lang.warmup:
+        argv.append(str(warmup))
+    code, out, errout, wall, rss_mb, err = launch(argv, timeout)
+    if err:
+        return None, None, None, None, "%s %s" % (lang.name, err)
+    if code != 0:
         # PHP (among others) prints fatal errors to stdout, so look there too
         # before declaring "no output".
         msg = ((errout or "").strip() or (out or "").strip()).splitlines()
         return None, None, None, None, "%s exited %d: %s" % (
-            lang.name, proc.returncode, msg[-1] if msg else "no output")
-    parts = out.split()
-    if len(parts) != 4 or parts[0] != "OK":
-        return None, None, None, None, "%s printed something unexpected: %r" % (
-            lang.name, out[:80])
-    # Clamped away from zero: a compiled language at a tiny --scale can report
-    # 0.000 ms, and a literal zero would poison every ratio downstream.
-    return max(float(parts[3]) / 1000.0, 1e-9), int(parts[2]), wall, rss_mb, None
+            lang.name, code, msg[-1] if msg else "no output")
+    secs, checksum, perr = parse_output(out)
+    if perr:
+        return None, None, None, None, "%s %s" % (lang.name, perr)
+    return secs, checksum, wall, rss_mb, None
+
+
+def validate_row(checksums, golden_value):
+    """checksums: {lang_key: int} for one benchmark. Returns (ok, value, note).
+    A row is valid only when every language agrees AND, if a golden value is
+    recorded for this size, matches it -- within-run agreement can never catch
+    a bug shared by every implementation, the golden can."""
+    distinct = set(checksums.values())
+    if not distinct:
+        return False, None, "no language produced a result"
+    if len(distinct) > 1:
+        return False, None, "CHECKSUMS DISAGREE %r" % checksums
+    value = distinct.pop()
+    if golden_value is not None and value != golden_value:
+        return False, value, ("checksum %s does not match the recorded golden %s "
+                              "-- every implementation here shares a bug"
+                              % (commas(value), commas(golden_value)))
+    return True, value, ("matches golden" if golden_value is not None
+                         else "no golden recorded for this size")
 
 
 def measure_startup(lang, trials=5):
@@ -2198,22 +2240,12 @@ def main():
                                       hue("%6.1fx" % ratio, heat_ratio(ratio), bold=True))
                 reveal(prefix, bar(secs / slowest), suffix)
 
-        distinct = set(checksums.values())
-        agreed = len(distinct) == 1
-        value = list(distinct)[0] if agreed else None
-        want = GOLDEN.get(bench["key"], {}).get(str(size)) if agreed else None
-        if agreed and want is not None and value != want:
-            print("    " + hue(u"\u2718 checksum %s does not match the recorded golden "
-                               "value %s -- every implementation here shares a bug; "
-                               "this row is EXCLUDED" % (commas(value), commas(want)),
-                               CORAL, bold=True))
-            agreed = False
-            invalid += 1
-        if agreed:
+        ok, value, note = validate_row(checksums,
+                                       GOLDEN.get(bench["key"], {}).get(str(size)))
+        if ok:
             print("    " + hue(u"\u2714", LIME)
-                  + DIM(" checksum %s -- all %d languages agree%s"
-                        % (commas(value), len(checksums),
-                           ", matches golden" if want is not None else "")))
+                  + DIM(" checksum %s -- all %d languages agree, %s"
+                        % (commas(value), len(checksums), note)))
             if row and min(row.values()) < 0.05:
                 print("    " + DIM("  (fastest entry under 50 ms -- ratios this small "
                                    "are mostly noise; raise --scale to mean them)"))
@@ -2223,10 +2255,9 @@ def main():
             sizes[bench["key"]] = size
             checkvals[bench["key"]] = value
             rss_all[bench["key"]] = rss_row
-        elif len(distinct) > 1:
-            print("    " + hue(u"\u2718 CHECKSUMS DISAGREE %r -- this comparison is "
-                               "INVALID and the row is excluded from every summary"
-                               % checksums, CORAL, bold=True))
+        else:
+            print("    " + hue(u"\u2718 " + note + " -- this row is EXCLUDED "
+                               "from every summary", CORAL, bold=True))
             invalid += 1
 
     total_wall = time.perf_counter() - total_wall
