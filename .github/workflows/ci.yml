@@ -1,0 +1,60 @@
+name: ci
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # apt covers the small toolchains; the setup actions cover the big
+      # runtimes; Rust is preinstalled on the runner image. Swift is skipped
+      # -- run.py notes any missing toolchain and carries on, so the job
+      # still validates everything that is present.
+      - name: apt toolchains
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm gcc g++ lua5.4 php-cli ruby-full gnucobol
+      - uses: actions/setup-go@v5
+        with: { go-version: stable }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "21" }
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: 8.x }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: numpy
+        run: pip install numpy
+
+      - name: runner unit tests
+        run: python3 -m unittest discover -v tests
+
+      # every language must reproduce the shared PRNG bit-for-bit -- this is
+      # the direct test of the split-multiply implementations
+      - name: PRNG conformance
+        run: python3 run.py --selftest --plain
+
+      # a quick full run; checksums are verified against golden.json
+      - name: quick suite
+        run: python3 run.py --quick --plain --warmup 1
+
+      # FMA drift canary: mandelbrot at the --heavy size is where fused
+      # multiply-adds change the checksum if a compiler starts contracting
+      - name: heavy mandelbrot vs golden
+        run: |
+          python3 - <<'EOF'
+          import json, subprocess
+          want = json.load(open("golden.json"))["mandelbrot"]["1959"]
+          for cmd in (["./build/bench_c"], ["./build/bench_cpp"],
+                      ["node", "bench.js"]):
+              out = subprocess.run(cmd + ["mandelbrot", "1959", "1"],
+                                   capture_output=True, text=True, check=True)
+              got = int(out.stdout.split()[2])
+              assert got == want, (cmd, got, want)
+              print(" ".join(cmd), "ok", got)
+          EOF
