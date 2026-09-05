@@ -4,7 +4,7 @@ bench_numpy.py -- Python again, but written the way Python is actually used
 for numeric work: the loops pushed down into NumPy, where they run as C.
 
 Usage: python3 bench_numpy.py <benchmark> <size> [reps]
-Prints: OK <benchmark> <checksum> <compute_milliseconds>
+Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 
 Same deterministic input, same checksum as every other bench.* in the suite,
 so the runner will happily race it against everyone else. It only enters the
@@ -180,20 +180,21 @@ def main():
                          % (name, ", ".join(sorted(BENCHMARKS))))
         return 2
 
-    best = float("inf")
+    times = []
     result = None
     for r in range(reps):
         t0 = time.perf_counter()
         v = fn(size)
-        elapsed = (time.perf_counter() - t0) * 1000.0
-        best = min(best, elapsed)
+        times.append((time.perf_counter() - t0) * 1000.0)
         if r == 0:
             result = v
         elif v != result:
             sys.stderr.write("nondeterministic result!\n")
             return 3
 
-    print("OK %s %d %.3f" % (name, result, best))
+    times.sort()
+    print("OK %s %d %.3f %.3f %.3f"
+          % (name, result, times[0], times[reps // 2], times[-1]))
     return 0
 
 

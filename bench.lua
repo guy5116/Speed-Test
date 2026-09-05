@@ -3,7 +3,7 @@
 bench.lua -- the Lua entry in the language speed comparison.
 
 Usage: lua bench.lua <benchmark> <size> [reps]
-Prints: OK <benchmark> <checksum> <compute_milliseconds>
+Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 
 Same algorithm, same deterministic input, same checksum as every other
 bench.* in this suite.
@@ -283,16 +283,16 @@ local function main()
   end
 
   -- Best-of-N: the fastest run is the one least polluted by scheduler noise,
-  -- cold caches and (for the JIT languages) not-yet-compiled code.
+  -- cold caches and (for the JIT languages) not-yet-compiled code. Median
+  -- and worst ride along so the runner can report the spread.
   -- os.clock() is Lua's only sub-second timer; it reports CPU rather than wall
   -- time, which for a single-threaded compute loop is the same number.
-  local best = math.huge
+  local times = {}
   local result = nil
   for r = 1, reps do
     local t0 = os.clock()
     local v = fn(size)
-    local elapsed = (os.clock() - t0) * 1000.0
-    if elapsed < best then best = elapsed end
+    times[r] = (os.clock() - t0) * 1000.0
     if r == 1 then
       result = v
     elseif v ~= result then
@@ -301,7 +301,9 @@ local function main()
     end
   end
 
-  io.write(string.format("OK %s %d %.3f\n", name, result, best))
+  table.sort(times)
+  io.write(string.format("OK %s %d %.3f %.3f %.3f\n", name, result,
+                         times[1], times[reps // 2 + 1], times[reps]))
   return 0
 end
 

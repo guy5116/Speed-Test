@@ -3,7 +3,7 @@
 bench.py -- the Python entry in the language speed comparison.
 
 Usage: python3 bench.py <benchmark> <size> [reps]
-Prints: OK <benchmark> <checksum> <compute_milliseconds>
+Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 
 Same algorithm, same deterministic input, same checksum as every other
 bench.* in this suite.
@@ -233,21 +233,24 @@ def main():
         return 2
 
     # Best-of-N: the fastest run is the one least polluted by scheduler noise,
-    # cold caches and (for the JIT languages) not-yet-compiled code.
-    best = float("inf")
+    # cold caches and (for the JIT languages) not-yet-compiled code. The
+    # median and worst go on the wire too, so the runner can report the
+    # spread instead of silently hiding it.
+    times = []
     result = None
     for r in range(reps):
         t0 = time.perf_counter()
         v = fn(size)
-        elapsed = (time.perf_counter() - t0) * 1000.0
-        best = min(best, elapsed)
+        times.append((time.perf_counter() - t0) * 1000.0)
         if r == 0:
             result = v
         elif v != result:
             sys.stderr.write("nondeterministic result!\n")
             return 3
 
-    print("OK %s %d %.3f" % (name, result, best))
+    times.sort()
+    print("OK %s %d %.3f %.3f %.3f"
+          % (name, result, times[0], times[reps // 2], times[-1]))
     return 0
 
 

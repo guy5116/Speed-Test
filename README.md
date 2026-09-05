@@ -205,11 +205,15 @@ mismatch does not just exclude the row -- the run exits non-zero, so a CI
 job cannot stay green while the suite proves nothing. `--strict` extends
 this to any language that fails, times out, or is missing from `--require`.
 
-**Best-of-N, inside one process.** Each program runs its benchmark N times
-(default 3) and reports the fastest. The repeats happen *in-process*, which
+**Best-of-N, inside one process — and the spread is reported, not hidden.**
+Each program runs its benchmark N times (default 3) and reports the fastest,
+*plus* the median and the worst. The repeats happen *in-process*, which
 matters enormously for Java: the JIT needs to see code run hot before it
 compiles it. Timing a single cold JVM run measures the JIT's warmup, not the
-language. Best-of-N also suppresses scheduler noise and cold caches.
+language. Best-of-N suppresses scheduler noise and cold caches — but
+suppressing noise is not the same as pretending there was none, so each row
+shows `±N%` (worst versus best), rows past 15% get a `⚠ noisy` flag, and
+`results.json` records `seconds_median` and `spread` alongside the best.
 
 **Startup is measured separately, not hidden.** The JVM's ~55 ms of boot time
 is meaningless for an 8-hour batch job and completely decisive for a CLI tool

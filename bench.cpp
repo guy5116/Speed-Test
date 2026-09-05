@@ -2,7 +2,7 @@
  * bench.cpp -- the C++ entry in the language speed comparison.
  *
  * Usage: bench <benchmark> <size> [reps]
- * Prints: OK <benchmark> <checksum> <compute_milliseconds>
+ * Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
  *
  * Every language in this suite runs the *same* algorithm on the *same*
  * deterministic input and prints the same checksum. If the checksums ever
@@ -16,6 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <string>
@@ -223,18 +224,21 @@ int main(int argc, char **argv) {
     if (reps < 1) reps = 1;
 
     // Best-of-N: the fastest run is the one least polluted by scheduler noise,
-    // cold caches and (for the JIT languages) not-yet-compiled code.
-    double best = 1e18;
+    // cold caches and (for the JIT languages) not-yet-compiled code. Median
+    // and worst ride along so the runner can report the spread.
+    std::vector<double> times;
+    times.reserve(reps);
     long long result = 0;
     for (int r = 0; r < reps; r++) {
         double t0 = now_ms();
         long long v = dispatch(name, size);
-        double elapsed = now_ms() - t0;
-        if (elapsed < best) best = elapsed;
+        times.push_back(now_ms() - t0);
         if (r == 0) result = v;
         else if (v != result) { fprintf(stderr, "nondeterministic result!\n"); return 3; }
     }
 
-    printf("OK %s %lld %.3f\n", name, result, best);
+    std::sort(times.begin(), times.end());
+    printf("OK %s %lld %.3f %.3f %.3f\n", name, result,
+           times[0], times[reps / 2], times[reps - 1]);
     return 0;
 }

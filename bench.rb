@@ -2,7 +2,7 @@
 # bench.rb -- the Ruby entry in the language speed comparison.
 #
 # Usage: ruby bench.rb <benchmark> <size> [reps]
-# Prints: OK <benchmark> <checksum> <compute_milliseconds>
+# Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 #
 # Same algorithm, same deterministic input, same checksum as every other
 # bench.* in this suite.
@@ -307,14 +307,14 @@ def main
   warmup.times { fn.call(size) }
 
   # Best-of-N: the fastest run is the one least polluted by scheduler noise,
-  # cold caches and (for the JIT languages) not-yet-compiled code.
-  best = Float::INFINITY
+  # cold caches and (for the JIT languages) not-yet-compiled code. Median
+  # and worst ride along so the runner can report the spread.
+  times = []
   result = nil
   reps.times do |r|
     t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
     v = fn.call(size)
-    elapsed = (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000.0
-    best = elapsed if elapsed < best
+    times << (Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0) * 1000.0
     if r == 0
       result = v
     elsif v != result
@@ -323,7 +323,9 @@ def main
     end
   end
 
-  printf("OK %s %d %.3f\n", name, result, best)
+  times.sort!
+  printf("OK %s %d %.3f %.3f %.3f\n", name, result,
+         times[0], times[reps / 2], times[-1])
   0
 end
 

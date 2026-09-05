@@ -3,7 +3,7 @@
  * bench.js -- the JavaScript entry in the language speed comparison.
  *
  * Usage: node bench.js <benchmark> <size> [reps]
- * Prints: OK <benchmark> <checksum> <compute_milliseconds>
+ * Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
  *
  * Same algorithm, same deterministic input, same checksum as every other
  * bench.* in this suite.
@@ -252,14 +252,14 @@ function main() {
   for (let w = 0; w < warmup; w++) fn(size);
 
   // Best-of-N: the fastest run is the one least polluted by scheduler noise,
-  // cold caches and (for the JIT languages) not-yet-compiled code.
-  let best = Infinity;
+  // cold caches and (for the JIT languages) not-yet-compiled code. Median
+  // and worst ride along so the runner can report the spread.
+  const times = [];
   let result = null;
   for (let r = 0; r < reps; r++) {
     const t0 = process.hrtime.bigint();
     const v = fn(size);
-    const elapsed = Number(process.hrtime.bigint() - t0) / 1e6;
-    if (elapsed < best) best = elapsed;
+    times.push(Number(process.hrtime.bigint() - t0) / 1e6);
     if (r === 0) result = v;
     else if (v !== result) {
       process.stderr.write('nondeterministic result!\n');
@@ -267,7 +267,10 @@ function main() {
     }
   }
 
-  process.stdout.write('OK ' + name + ' ' + result + ' ' + best.toFixed(3) + '\n');
+  times.sort(function (a, b) { return a - b; });
+  process.stdout.write('OK ' + name + ' ' + result + ' ' + times[0].toFixed(3)
+    + ' ' + times[reps >> 1].toFixed(3)
+    + ' ' + times[reps - 1].toFixed(3) + '\n');
   return 0;
 }
 

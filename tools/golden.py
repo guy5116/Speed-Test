@@ -52,7 +52,7 @@ def compute(scales, langs):
             for lang in langs:
                 if b["key"] in lang.sits_out:
                     continue
-                secs, checksum, wall, rss, err = run.run_one(
+                secs, checksum, wall, rss, err, med, worst = run.run_one(
                     lang, b["key"], size, 1, timeout=1800.0)
                 if err:
                     problems.append("%s %d: %s" % (b["key"], size, err))

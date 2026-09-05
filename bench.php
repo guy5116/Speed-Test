@@ -2,7 +2,7 @@
 # bench.php -- the PHP entry in the language speed comparison.
 #
 # Usage: php bench.php <benchmark> <size> [reps]
-# Prints: OK <benchmark> <checksum> <compute_milliseconds>
+# Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 #
 # Same algorithm, same deterministic input, same checksum as every other
 # bench.* in this suite.
@@ -334,14 +334,14 @@ function main($argv) {
     for ($w = 0; $w < $warmup; $w++) $fn($size);
 
     # Best-of-N: the fastest run is the one least polluted by scheduler noise,
-    # cold caches and (for the JIT languages) not-yet-compiled code.
-    $best = INF;
+    # cold caches and (for the JIT languages) not-yet-compiled code. Median
+    # and worst ride along so the runner can report the spread.
+    $times = [];
     $result = null;
     for ($r = 0; $r < $reps; $r++) {
         $t0 = hrtime(true);
         $v = $fn($size);
-        $elapsed = (hrtime(true) - $t0) / 1e6;
-        if ($elapsed < $best) $best = $elapsed;
+        $times[] = (hrtime(true) - $t0) / 1e6;
         if ($r === 0) {
             $result = $v;
         } elseif ($v !== $result) {
@@ -350,7 +350,9 @@ function main($argv) {
         }
     }
 
-    printf("OK %s %d %.3f\n", $name, $result, $best);
+    sort($times);
+    printf("OK %s %d %.3f %.3f %.3f\n", $name, $result,
+           $times[0], $times[intdiv($reps, 2)], $times[$reps - 1]);
     return 0;
 }
 

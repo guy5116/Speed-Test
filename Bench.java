@@ -2,11 +2,12 @@
  * Bench.java -- the Java entry in the language speed comparison.
  *
  * Usage: java Bench <benchmark> <size>
- * Prints: OK <benchmark> <checksum> <compute_milliseconds>
+ * Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
  *
  * Same algorithm, same deterministic input, same checksum as every other
  * bench.* in this suite.
  */
+import java.util.Arrays;
 import java.util.HashMap;
 
 public class Bench {
@@ -215,14 +216,14 @@ public class Bench {
         for (int w = 0; w < warmup; w++) run(name, size);
 
         // Best-of-N: the fastest run is the one least polluted by scheduler noise,
-        // cold caches and (for the JIT languages) not-yet-compiled code.
-        double best = Double.POSITIVE_INFINITY;
+        // cold caches and (for the JIT languages) not-yet-compiled code. Median
+        // and worst ride along so the runner can report the spread.
+        double[] times = new double[reps];
         long result = 0;
         for (int r = 0; r < reps; r++) {
             long t0 = System.nanoTime();
             long v = run(name, size);
-            double elapsed = (System.nanoTime() - t0) / 1e6;
-            if (elapsed < best) best = elapsed;
+            times[r] = (System.nanoTime() - t0) / 1e6;
             if (r == 0) result = v;
             else if (v != result) {
                 System.err.println("nondeterministic result!");
@@ -230,7 +231,9 @@ public class Bench {
             }
         }
 
-        System.out.printf("OK %s %d %.3f%n", name, result, best);
+        Arrays.sort(times);
+        System.out.printf("OK %s %d %.3f %.3f %.3f%n", name, result,
+                          times[0], times[reps / 2], times[reps - 1]);
     }
 
     static long run(String name, int size) {

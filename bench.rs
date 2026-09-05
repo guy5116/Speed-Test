@@ -1,7 +1,7 @@
 // bench.rs -- the Rust entry in the language speed comparison.
 //
 // Usage: bench <benchmark> <size> [reps]
-// Prints: OK <benchmark> <checksum> <compute_milliseconds>
+// Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 //
 // Same algorithm, same deterministic input, same checksum as every other
 // bench.* in this suite.
@@ -300,16 +300,14 @@ fn main() {
     }
 
     // Best-of-N: the fastest run is the one least polluted by scheduler noise,
-    // cold caches and (for the JIT languages) not-yet-compiled code.
-    let mut best = f64::INFINITY;
+    // cold caches and (for the JIT languages) not-yet-compiled code. Median
+    // and worst ride along so the runner can report the spread.
+    let mut times: Vec<f64> = Vec::with_capacity(reps as usize);
     let mut result: i64 = 0;
     for r in 0..reps {
         let t0 = Instant::now();
         let v = dispatch(&name, size);
-        let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
-        if elapsed < best {
-            best = elapsed;
-        }
+        times.push(t0.elapsed().as_secs_f64() * 1000.0);
         if r == 0 {
             result = v;
         } else if v != result {
@@ -318,5 +316,7 @@ fn main() {
         }
     }
 
-    println!("OK {} {} {:.3}", name, result, best);
+    times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("OK {} {} {:.3} {:.3} {:.3}", name, result,
+             times[0], times[reps as usize / 2], times[reps as usize - 1]);
 }

@@ -1,7 +1,7 @@
 ; bench.asm -- the x86-64 assembly entry in the language speed comparison.
 ;
 ; Usage: bench_asm <benchmark> <size> [reps]
-; Prints: OK <benchmark> <checksum> <compute_milliseconds>
+; Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 ;
 ; Same algorithm, same deterministic input, same checksum as every other
 ; bench.* in this suite.
@@ -35,7 +35,7 @@ global main
 
 section .rodata
 
-fmt_ok:        db "OK %s %lld %.3f", 10, 0
+fmt_ok:        db "OK %s %lld %.3f %.3f %.3f", 10, 0
 msg_usage:     db "usage: %s <benchmark> <size> [reps]", 10, 0
 msg_unknown:   db "unknown benchmark: %s", 10, 0
 msg_oom:       db "out of memory", 10, 0
@@ -850,8 +850,14 @@ main:
 .reps_done:
     ; Best-of-N: the fastest run is the one least polluted by scheduler noise
     ; and cold caches. (No JIT to warm up here; the "compile" already happened.)
-    movsd   xmm0, [d_huge]
-    movsd   [rsp], xmm0          ; best
+    ; Every rep's time lands in a malloc'd array so the report can carry
+    ; best, median and worst -- the runner shows the spread.
+    mov     edi, r13d
+    shl     rdi, 3               ; reps * sizeof(double)
+    call    malloc
+    test    rax, rax
+    jz      oom_exit
+    mov     r14, rax             ; times (argc in r14d is dead past here)
     xor     r15d, r15d           ; r
 .rep:
     cmp     r15d, r13d
@@ -864,11 +870,7 @@ main:
     mov     [rsp+24], rax
     call    now_ms
     subsd   xmm0, [rsp+16]       ; elapsed
-    movsd   xmm1, [rsp]
-    ucomisd xmm0, xmm1
-    jae     .no_best
-    movsd   [rsp], xmm0
-.no_best:
+    movsd   [r14 + r15*8], xmm0  ; times[r]
     test    r15d, r15d
     jnz     .check
     mov     rax, [rsp+24]
@@ -888,12 +890,41 @@ main:
     inc     r15d
     jmp     .rep
 .report:
+    ; insertion-sort times[0..reps-1]; reps is tiny, this is nothing
+    mov     ecx, 1               ; i
+.sort_outer:
+    cmp     ecx, r13d
+    jge     .sorted
+    movsd   xmm0, [r14 + rcx*8]  ; t = times[i]
+    mov     edx, ecx             ; j
+.sort_inner:
+    test    edx, edx
+    jz      .sort_place
+    movsd   xmm1, [r14 + rdx*8 - 8]
+    ucomisd xmm1, xmm0
+    jbe     .sort_place          ; times[j-1] <= t
+    movsd   [r14 + rdx*8], xmm1
+    dec     edx
+    jmp     .sort_inner
+.sort_place:
+    movsd   [r14 + rdx*8], xmm0
+    inc     ecx
+    jmp     .sort_outer
+.sorted:
     lea     rdi, [fmt_ok]
     mov     rsi, [rbx+8]
     mov     rdx, [rsp+8]
-    movsd   xmm0, [rsp]
-    mov     eax, 1               ; one vector register holds a vararg
+    movsd   xmm0, [r14]          ; best
+    mov     ecx, r13d
+    shr     ecx, 1
+    movsd   xmm1, [r14 + rcx*8]  ; median
+    mov     ecx, r13d
+    dec     ecx
+    movsd   xmm2, [r14 + rcx*8]  ; worst
+    mov     eax, 3               ; three vector registers hold varargs
     call    printf
+    mov     rdi, r14
+    call    free
     xor     eax, eax
 .out:
     add     rsp, 32

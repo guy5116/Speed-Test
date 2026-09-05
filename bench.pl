@@ -2,7 +2,7 @@
 # bench.pl -- the Perl entry in the language speed comparison.
 #
 # Usage: perl bench.pl <benchmark> <size> [reps]
-# Prints: OK <benchmark> <checksum> <compute_milliseconds>
+# Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 #
 # Same algorithm, same deterministic input, same checksum as every other
 # bench.* in this suite.
@@ -287,15 +287,15 @@ sub main {
     }
 
     # Best-of-N: the fastest run is the one least polluted by scheduler noise,
-    # cold caches and (for the JIT languages) not-yet-compiled code.
-    my $best = 9**99;
+    # cold caches and (for the JIT languages) not-yet-compiled code. Median
+    # and worst ride along so the runner can report the spread.
+    my @times;
     my $result;
     for my $r (0 .. $reps - 1) {
         # CLOCK_MONOTONIC, not time(): wall-clock jumps if NTP steps the clock
         my $t0 = clock_gettime(CLOCK_MONOTONIC);
         my $v = $fn->($size);
-        my $elapsed = (clock_gettime(CLOCK_MONOTONIC) - $t0) * 1000.0;
-        $best = $elapsed if $elapsed < $best;
+        push @times, (clock_gettime(CLOCK_MONOTONIC) - $t0) * 1000.0;
         if ($r == 0) {
             $result = $v;
         }
@@ -305,7 +305,9 @@ sub main {
         }
     }
 
-    printf "OK %s %d %.3f\n", $name, $result, $best;
+    @times = sort { $a <=> $b } @times;
+    printf "OK %s %d %.3f %.3f %.3f\n", $name, $result,
+        $times[0], $times[int($reps / 2)], $times[-1];
     return 0;
 }
 

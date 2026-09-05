@@ -2,7 +2,7 @@
  * bench.cs -- the C# entry in the language speed comparison.
  *
  * Usage: dotnet bench_cs.dll <benchmark> <size> [reps]
- * Prints: OK <benchmark> <checksum> <compute_milliseconds>
+ * Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
  *
  * Same algorithm, same deterministic input, same checksum as every other
  * bench.* in this suite.
@@ -240,14 +240,14 @@ class Bench {
         for (int w = 0; w < warmup; w++) Run(name, size);
 
         // Best-of-N: the fastest run is the one least polluted by scheduler noise,
-        // cold caches and (for the JIT languages) not-yet-compiled code.
-        double best = double.PositiveInfinity;
+        // cold caches and (for the JIT languages) not-yet-compiled code. Median
+        // and worst ride along so the runner can report the spread.
+        double[] times = new double[reps];
         long result = 0;
         for (int r = 0; r < reps; r++) {
             long t0 = Stopwatch.GetTimestamp();
             long v = Run(name, size);
-            double elapsed = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
-            if (elapsed < best) best = elapsed;
+            times[r] = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
             if (r == 0) result = v;
             else if (v != result) {
                 Console.Error.WriteLine("nondeterministic result!");
@@ -255,10 +255,12 @@ class Bench {
             }
         }
 
+        System.Array.Sort(times);
         // InvariantCulture so the milliseconds always print with a '.', whatever
         // the machine's locale thinks a decimal separator looks like.
         Console.WriteLine(string.Format(System.Globalization.CultureInfo.InvariantCulture,
-                                        "OK {0} {1} {2:F3}", name, result, best));
+                                        "OK {0} {1} {2:F3} {3:F3} {4:F3}", name, result,
+                                        times[0], times[reps / 2], times[reps - 1]));
         return 0;
     }
 }

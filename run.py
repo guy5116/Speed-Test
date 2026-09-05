@@ -1144,41 +1144,47 @@ def launch(argv, timeout=600.0):
 
 
 def parse_output(text):
-    """Parse a child's one-line protocol output, `OK <bench> <checksum> <ms>`.
-    Returns (compute_seconds, checksum, error)."""
+    """Parse a child's one-line protocol output,
+    `OK <bench> <checksum> <best_ms> [<median_ms> <worst_ms>]`.
+    Returns (best_seconds, checksum, error, median_seconds, worst_seconds);
+    the last two are None for the old 4-field form, so an entry that has not
+    learned to report its spread still works."""
     parts = (text or "").split()
-    if len(parts) != 4 or parts[0] != "OK":
-        return None, None, "printed something unexpected: %r" % (text or "")[:80]
+    if len(parts) not in (4, 6) or parts[0] != "OK":
+        return None, None, "printed something unexpected: %r" % (text or "")[:80], None, None
     try:
-        secs = float(parts[3]) / 1000.0
         checksum = int(parts[2])
+        times = [max(float(p) / 1000.0, 1e-9) for p in parts[3:]]
     except ValueError:
-        return None, None, "printed something unexpected: %r" % (text or "")[:80]
-    # Clamped away from zero: a compiled language at a tiny --scale can report
-    # 0.000 ms, and a literal zero would poison every ratio downstream.
-    return max(secs, 1e-9), checksum, None
+        return None, None, "printed something unexpected: %r" % (text or "")[:80], None, None
+    # Clamped away from zero (in `times`): a compiled language at a tiny
+    # --scale can report 0.000 ms, and a literal zero would poison every
+    # ratio downstream.
+    if len(times) == 3:
+        return times[0], checksum, None, times[1], times[2]
+    return times[0], checksum, None, None, None
 
 
 def run_one(lang, bench_key, size, reps, warmup=0, timeout=600.0):
-    """Returns (compute_seconds, checksum, wall_seconds, peak_rss_mb, error).
-    The error is returned rather than printed, so the caller can stop the
-    spinner first."""
+    """Returns (compute_seconds, checksum, wall_seconds, peak_rss_mb, error,
+    median_seconds, worst_seconds). The error is returned rather than
+    printed, so the caller can stop the spinner first."""
     argv = PIN + lang.cmd + [bench_key, str(size), str(reps)]
     if warmup and lang.warmup:
         argv.append(str(warmup))
     code, out, errout, wall, rss_mb, err = launch(argv, timeout)
     if err:
-        return None, None, None, None, "%s %s" % (lang.name, err)
+        return None, None, None, None, "%s %s" % (lang.name, err), None, None
     if code != 0:
         # PHP (among others) prints fatal errors to stdout, so look there too
         # before declaring "no output".
         msg = ((errout or "").strip() or (out or "").strip()).splitlines()
         return None, None, None, None, "%s exited %d: %s" % (
-            lang.name, code, msg[-1] if msg else "no output")
-    secs, checksum, perr = parse_output(out)
+            lang.name, code, msg[-1] if msg else "no output"), None, None
+    secs, checksum, perr, median, worst = parse_output(out)
     if perr:
-        return None, None, None, None, "%s %s" % (lang.name, perr)
-    return secs, checksum, wall, rss_mb, None
+        return None, None, None, None, "%s %s" % (lang.name, perr), None, None
+    return secs, checksum, wall, rss_mb, None, median, worst
 
 
 def validate_row(checksums, golden_value):
@@ -1246,7 +1252,7 @@ def prng_selftest(active):
                 % (commas(count), commas(h))))
     bad = 0
     for lang in active:
-        secs, checksum, _, _, err = run_one(lang, "prng", count, 1)
+        secs, checksum, _, _, err, _, _ = run_one(lang, "prng", count, 1)
         if err:
             print("    %s %s  %s" % (hue(u"✘", CORAL, bold=True),
                                      hue(lang.name.ljust(NAMEW), lang.tint, bold=True),
@@ -1804,6 +1810,8 @@ def write_report(active, benches, results, startup, run_meta, total_wall):
 
     # ---- machine-readable twin ----
     rss = run_meta.get("rss_mb") or {}
+    medians = run_meta.get("medians") or {}
+    spreads = run_meta.get("spreads") or {}
     payload = {
         "generated": time.strftime("%Y-%m-%d %H:%M:%S"),
         "host": _host(), "machine": _cpu_info(),
@@ -1815,6 +1823,8 @@ def write_report(active, benches, results, startup, run_meta, total_wall):
             (b["key"], {"title": b["title"], "size": run_meta["sizes"][b["key"]],
                         "checksum": run_meta["checksums"].get(b["key"]),
                         "seconds": results[b["key"]],
+                        "seconds_median": medians.get(b["key"], {}),
+                        "spread": spreads.get(b["key"], {}),
                         "peak_rss_mb": rss.get(b["key"], {})}) for b in shown),
         "startup_seconds": startup,
         "geomean_slowdown": avg,
@@ -2155,9 +2165,10 @@ def main():
     except Exception:
         GOLDEN = {}
 
-    results = {}   # bench key -> {lang key: seconds}
+    results = {}   # bench key -> {lang key: best seconds}
     sizes, checkvals = {}, {}      # per bench key, for the report
     rss_all = {}   # bench key -> {lang key: peak MB}
+    med_all, spread_all = {}, {}   # bench key -> {lang key: median s / spread}
     invalid, errors = 0, 0
     # --shuffle used to draw from an unseeded random, so a shuffled run could
     # never be reproduced; results.json now records the seed and the order.
@@ -2177,6 +2188,7 @@ def main():
         print()
 
         row, checksums, rss_row, failures, notes = {}, {}, {}, [], []
+        med_row, spread_row = {}, {}
         run_order = list(active)
         if args.shuffle:
             shuffler.shuffle(run_order)
@@ -2192,7 +2204,7 @@ def main():
             eff_reps = reps + (warmup if lang.warmup else 0)
             guess = est.estimate(lang.key, bench, size, eff_reps)
             with Meter(label, guess, tint=lang.tint) as meter:
-                secs, checksum, wall, rss, err = run_one(
+                secs, checksum, wall, rss, err, median, worst = run_one(
                     lang, bench["key"], size, reps, warmup,
                     timeout=max(600.0, 20.0 * guess))
                 meter.ok = err is None
@@ -2207,6 +2219,11 @@ def main():
             checksums[lang.key] = checksum
             if rss is not None:
                 rss_row[lang.key] = round(rss, 1)
+            if median is not None and worst is not None:
+                # spread: how far the worst rep strayed from the best one --
+                # the noise best-of-N would otherwise silently hide
+                med_row[lang.key] = median
+                spread_row[lang.key] = (worst - secs) / secs
         for msg in notes:
             print("    " + DIM(u"\u25cb ") + hue(msg, GOLD))
         for err in failures:
@@ -2236,8 +2253,15 @@ def main():
                 badge = (hue(BADGES[place][0], BADGES[place][1], bold=True)
                          if place < len(BADGES) else DIM(u"\u00b7"))
                 prefix = "    %s %s " % (badge, hue(lang.name.ljust(NAMEW), lang.tint, bold=True))
-                suffix = " %s  %s" % (hue("%9s" % fmt_secs(secs), SILVER),
-                                      hue("%6.1fx" % ratio, heat_ratio(ratio), bold=True))
+                spread = spread_row.get(lang.key)
+                tail = ""
+                if spread is not None and reps > 1:
+                    tail = DIM(" \u00b1%d%%" % round(spread * 100))
+                    if spread > 0.15:
+                        tail += " " + hue(u"\u26a0 noisy", GOLD, bold=True)
+                suffix = " %s  %s%s" % (hue("%9s" % fmt_secs(secs), SILVER),
+                                        hue("%6.1fx" % ratio, heat_ratio(ratio), bold=True),
+                                        tail)
                 reveal(prefix, bar(secs / slowest), suffix)
 
         ok, value, note = validate_row(checksums,
@@ -2255,6 +2279,8 @@ def main():
             sizes[bench["key"]] = size
             checkvals[bench["key"]] = value
             rss_all[bench["key"]] = rss_row
+            med_all[bench["key"]] = med_row
+            spread_all[bench["key"]] = spread_row
         else:
             print("    " + hue(u"\u2718 " + note + " -- this row is EXCLUDED "
                                "from every summary", CORAL, bold=True))
@@ -2411,6 +2437,7 @@ def main():
             report = write_report(active, benches, results, startup,
                                   {"scale": scale, "reps": reps, "sizes": sizes,
                                    "checksums": checkvals, "rss_mb": rss_all,
+                                   "medians": med_all, "spreads": spread_all,
                                    "argv": sys.argv[1:], "seed": seed,
                                    "order": order_used, "commit": _git_commit(),
                                    "pinned": PIN[-1] if PIN else None,

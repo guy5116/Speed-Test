@@ -57,7 +57,7 @@ class TestCrossLanguageOracle(unittest.TestCase):
                 for size in sizes:
                     with self.subTest(lang=lang.key, bench=key, size=size):
                         expected = getattr(bench, "bench_" + key)(size)
-                        secs, checksum, wall, rss, err = run.run_one(
+                        secs, checksum, wall, rss, err, med, worst = run.run_one(
                             lang, key, size, 1, timeout=120.0)
                         self.assertIsNone(err, err)
                         self.assertEqual(checksum, expected)
@@ -66,7 +66,7 @@ class TestCrossLanguageOracle(unittest.TestCase):
         expected = bench.bench_sieve(1000)
         for lang in LANGS:
             with self.subTest(lang=lang.key):
-                secs, checksum, wall, rss, err = run.run_one(
+                secs, checksum, wall, rss, err, med, worst = run.run_one(
                     lang, "sieve", 1000, 2, timeout=120.0)
                 self.assertIsNone(err, err)
                 self.assertEqual(checksum, expected)
@@ -83,7 +83,7 @@ class TestEntryProtocol(unittest.TestCase):
                     lang.cmd + ["sieve", "1000", "1", "2"], timeout=120.0)
                 self.assertIsNone(err, err)
                 self.assertEqual(code, 0, errout)
-                secs, checksum, perr = run.parse_output(out)
+                secs, checksum, perr, med, worst = run.parse_output(out)
                 self.assertIsNone(perr, perr)
                 self.assertEqual(checksum, expected)
 

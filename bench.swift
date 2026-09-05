@@ -2,7 +2,7 @@
  * bench.swift -- the Swift entry in the language speed comparison.
  *
  * Usage: bench <benchmark> <size> [reps]
- * Prints: OK <benchmark> <checksum> <compute_milliseconds>
+ * Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
  *
  * Same algorithm, same deterministic input, same checksum as every other
  * bench.* in this suite.
@@ -276,14 +276,15 @@ guard let size = Int(args[2]) else { fail("bad size: \(args[2])", 2) }
 let reps = max(args.count > 3 ? (Int(args[3]) ?? 1) : 1, 1)
 
 // Best-of-N: the fastest run is the one least polluted by scheduler noise
-// and cold caches.
-var best = Double.infinity
+// and cold caches. Median and worst ride along so the runner can report
+// the spread.
+var times = [Double]()
+times.reserveCapacity(reps)
 var result: Int64 = 0
 for r in 0..<reps {
     let t0 = nowMS()
     guard let v = dispatch(name, size) else { fail("unknown benchmark: \(name)", 2) }
-    let elapsed = nowMS() - t0
-    if elapsed < best { best = elapsed }
+    times.append(nowMS() - t0)
     if r == 0 {
         result = v
     } else if v != result {
@@ -291,4 +292,5 @@ for r in 0..<reps {
     }
 }
 
-print("OK \(name) \(result) \(fmt3(best))")
+times.sort()
+print("OK \(name) \(result) \(fmt3(times[0])) \(fmt3(times[reps / 2])) \(fmt3(times[reps - 1]))")

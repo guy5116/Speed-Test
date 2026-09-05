@@ -78,33 +78,48 @@ class TestInt32Cap(unittest.TestCase):
 
 class TestParseOutput(unittest.TestCase):
     def test_good_line(self):
-        secs, checksum, err = run.parse_output("OK sieve 42 1.500")
+        secs, checksum, err, med, worst = run.parse_output("OK sieve 42 1.500")
         self.assertIsNone(err)
         self.assertEqual(checksum, 42)
         self.assertAlmostEqual(secs, 0.0015)
+        self.assertIsNone(med)        # the old 4-field form carries no spread
+        self.assertIsNone(worst)
+
+    def test_spread_protocol_six_fields(self):
+        secs, checksum, err, med, worst = run.parse_output(
+            "OK sieve 42 1.500 1.600 1.900")
+        self.assertIsNone(err)
+        self.assertEqual(checksum, 42)
+        self.assertAlmostEqual(secs, 0.0015)
+        self.assertAlmostEqual(med, 0.0016)
+        self.assertAlmostEqual(worst, 0.0019)
+
+    def test_five_fields_is_an_error(self):
+        secs, checksum, err, med, worst = run.parse_output("OK sieve 42 1.5 1.6")
+        self.assertIsNotNone(err)
 
     def test_zero_time_clamped_above_zero(self):
-        secs, checksum, err = run.parse_output("OK sieve 42 0.000")
+        secs, checksum, err, med, worst = run.parse_output("OK sieve 42 0.000")
         self.assertIsNone(err)
         self.assertEqual(checksum, 42)
         self.assertGreater(secs, 0)
 
     def test_missing_field_is_an_error(self):
-        secs, checksum, err = run.parse_output("OK sieve 42")
+        secs, checksum, err, med, worst = run.parse_output("OK sieve 42")
         self.assertIsNotNone(err)
         self.assertIsNone(secs)
 
     def test_bad_checksum_is_an_error(self):
-        secs, checksum, err = run.parse_output("OK sieve x 1.0")
+        secs, checksum, err, med, worst = run.parse_output("OK sieve x 1.0")
         self.assertIsNotNone(err)
 
     def test_whitespace_tolerated(self):
-        secs, checksum, err = run.parse_output("  OK sieve 42 1.500 \n")
+        secs, checksum, err, med, worst = run.parse_output("  OK sieve 42 1.500 \n")
         self.assertIsNone(err)
         self.assertEqual(checksum, 42)
 
     def test_empty_output_is_an_error(self):
-        secs, checksum, err = run.parse_output("")
+        secs, checksum, err, med, worst = run.parse_output("")
         self.assertIsNotNone(err)
 
 

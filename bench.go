@@ -1,7 +1,7 @@
 // bench.go -- the Go entry in the language speed comparison.
 //
 // Usage: bench <benchmark> <size>
-// Prints: OK <benchmark> <checksum> <compute_milliseconds>
+// Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 //
 // Same algorithm, same deterministic input, same checksum as every other
 // bench.* in this suite.
@@ -9,8 +9,8 @@ package main
 
 import (
 	"fmt"
-	"math"
 	"os"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -290,16 +290,14 @@ func main() {
 	}
 
 	// Best-of-N: the fastest run is the one least polluted by scheduler noise,
-	// cold caches and (for the JIT languages) not-yet-compiled code.
-	best := math.Inf(1)
+	// cold caches and (for the JIT languages) not-yet-compiled code. Median
+	// and worst ride along so the runner can report the spread.
+	times := make([]float64, 0, reps)
 	var result int64
 	for r := 0; r < reps; r++ {
 		start := time.Now()
 		v := dispatch(name, size)
-		elapsed := float64(time.Since(start).Nanoseconds()) / 1e6
-		if elapsed < best {
-			best = elapsed
-		}
+		times = append(times, float64(time.Since(start).Nanoseconds())/1e6)
 		if r == 0 {
 			result = v
 		} else if v != result {
@@ -308,5 +306,7 @@ func main() {
 		}
 	}
 
-	fmt.Printf("OK %s %d %.3f\n", name, result, best)
+	sort.Float64s(times)
+	fmt.Printf("OK %s %d %.3f %.3f %.3f\n", name, result,
+		times[0], times[reps/2], times[reps-1])
 }

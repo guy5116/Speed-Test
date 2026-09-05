@@ -3,7 +3,7 @@
 *> bench.cob -- the COBOL entry in the language speed comparison.
 *>
 *> Usage: bench <benchmark> <size> [reps]
-*> Prints: OK <benchmark> <checksum> <compute_milliseconds>
+*> Prints: OK <benchmark> <checksum> <best_ms> <median_ms> <worst_ms>
 *>
 *> Same algorithm, same deterministic input, same checksum as every other
 *> bench.* in this suite. GnuCOBOL 3+, compiled to native code via C with
@@ -52,9 +52,19 @@ WORKING-STORAGE SECTION.
 01 WS-NOW-MS        USAGE COMP-2.
 01 WS-T0            USAGE COMP-2.
 01 WS-ELAPSED       USAGE COMP-2.
-01 WS-BEST          USAGE COMP-2.
+*> every rep's time, so the report can carry best, median and worst;
+*> 100,000 slots is 800 KB of BSS and far beyond any sane --reps
+01 WS-TIMES-TAB.
+   05 WS-TIME       OCCURS 100000 USAGE COMP-2.
+01 WS-SI            USAGE BINARY-LONG.
+01 WS-SJ            USAGE BINARY-LONG.
+01 WS-MED-IX        USAGE BINARY-LONG.
+01 WS-ST            USAGE COMP-2.
+01 WS-DONE          PIC 9.
 01 OUT-CHK          PIC Z(18)9.
 01 OUT-MS           PIC Z(9)9.999.
+01 OUT-MS2          PIC Z(9)9.999.
+01 OUT-MS3          PIC Z(9)9.999.
 
 01 CGT-TS.
    05 CGT-SEC       PIC S9(18) COMP-5.
@@ -232,6 +242,9 @@ MAIN-PARA.
     IF WS-REPS < 1
         MOVE 1 TO WS-REPS
     END-IF
+    IF WS-REPS > 100000
+        MOVE 100000 TO WS-REPS
+    END-IF
     EVALUATE WS-BENCH
         WHEN "mandelbrot"
         WHEN "sieve"
@@ -249,17 +262,15 @@ MAIN-PARA.
     END-EVALUATE
 
     *> Best-of-N: the fastest run is the one least polluted by scheduler
-    *> noise and cold caches.
-    COMPUTE WS-BEST = 999999999999999
+    *> noise and cold caches. Median and worst ride along so the runner
+    *> can report the spread.
     PERFORM VARYING WS-R FROM 1 BY 1 UNTIL WS-R > WS-REPS
         PERFORM GET-NOW-MS
         MOVE WS-NOW-MS TO WS-T0
         PERFORM RUN-ONE
         PERFORM GET-NOW-MS
         COMPUTE WS-ELAPSED = WS-NOW-MS - WS-T0
-        IF WS-ELAPSED < WS-BEST
-            MOVE WS-ELAPSED TO WS-BEST
-        END-IF
+        MOVE WS-ELAPSED TO WS-TIME(WS-R)
         IF WS-R = 1
             MOVE WS-RESULT TO WS-FIRST
         ELSE
@@ -271,10 +282,35 @@ MAIN-PARA.
         END-IF
     END-PERFORM
 
+    *> insertion-sort the rep times; reps is tiny, this costs nothing
+    PERFORM VARYING WS-SI FROM 2 BY 1 UNTIL WS-SI > WS-REPS
+        MOVE WS-TIME(WS-SI) TO WS-ST
+        COMPUTE WS-SJ = WS-SI - 1
+        MOVE 0 TO WS-DONE
+        PERFORM UNTIL WS-DONE = 1
+            IF WS-SJ < 1
+                MOVE 1 TO WS-DONE
+            ELSE
+                IF WS-TIME(WS-SJ) > WS-ST
+                    MOVE WS-TIME(WS-SJ) TO WS-TIME(WS-SJ + 1)
+                    COMPUTE WS-SJ = WS-SJ - 1
+                ELSE
+                    MOVE 1 TO WS-DONE
+                END-IF
+            END-IF
+        END-PERFORM
+        MOVE WS-ST TO WS-TIME(WS-SJ + 1)
+    END-PERFORM
+
     MOVE WS-FIRST TO OUT-CHK
-    COMPUTE OUT-MS ROUNDED = WS-BEST
+    COMPUTE OUT-MS ROUNDED = WS-TIME(1)
+    COMPUTE WS-MED-IX = WS-REPS / 2
+    ADD 1 TO WS-MED-IX
+    COMPUTE OUT-MS2 ROUNDED = WS-TIME(WS-MED-IX)
+    COMPUTE OUT-MS3 ROUNDED = WS-TIME(WS-REPS)
     DISPLAY "OK " FUNCTION TRIM(WS-BENCH) " "
-        FUNCTION TRIM(OUT-CHK) " " FUNCTION TRIM(OUT-MS)
+        FUNCTION TRIM(OUT-CHK) " " FUNCTION TRIM(OUT-MS) " "
+        FUNCTION TRIM(OUT-MS2) " " FUNCTION TRIM(OUT-MS3)
     GOBACK.
 
 RUN-ONE.

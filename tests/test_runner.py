@@ -98,7 +98,7 @@ class TestRunOne(unittest.TestCase):
 
     def test_parses_protocol(self):
         lang = self.fake_lang(["/bin/sh", "-c", 'echo "OK sieve 42 1.500"'])
-        secs, checksum, wall, rss, err = run.run_one(lang, "sieve", 8, 1)
+        secs, checksum, wall, rss, err, med, worst = run.run_one(lang, "sieve", 8, 1)
         self.assertIsNone(err)
         self.assertEqual(checksum, 42)
         self.assertAlmostEqual(secs, 0.0015)
@@ -106,24 +106,24 @@ class TestRunOne(unittest.TestCase):
 
     def test_nonzero_exit_is_an_error(self):
         lang = self.fake_lang(["/bin/sh", "-c", "echo boom >&2; exit 3"])
-        secs, checksum, wall, rss, err = run.run_one(lang, "sieve", 8, 1)
+        secs, checksum, wall, rss, err, med, worst = run.run_one(lang, "sieve", 8, 1)
         self.assertIsNone(secs)
         self.assertIn("exited 3", err)
         self.assertIn("boom", err)
 
     def test_garbage_output_is_an_error(self):
         lang = self.fake_lang(["/bin/sh", "-c", "echo not a benchmark"])
-        _, _, _, _, err = run.run_one(lang, "sieve", 8, 1)
+        _, _, _, _, err, _, _ = run.run_one(lang, "sieve", 8, 1)
         self.assertIn("unexpected", err)
 
     def test_timeout_kills_the_child(self):
         lang = self.fake_lang(["/bin/sh", "-c", "sleep 30"])
-        _, _, _, _, err = run.run_one(lang, "sieve", 8, 1, timeout=0.3)
+        _, _, _, _, err, _, _ = run.run_one(lang, "sieve", 8, 1, timeout=0.3)
         self.assertIn("timed out", err)
 
     def test_zero_time_is_clamped(self):
         lang = self.fake_lang(["/bin/sh", "-c", 'echo "OK sieve 4 0.000"'])
-        secs, _, _, _, err = run.run_one(lang, "sieve", 8, 1)
+        secs, _, _, _, err, _, _ = run.run_one(lang, "sieve", 8, 1)
         self.assertIsNone(err)
         self.assertGreater(secs, 0)
 
